@@ -3,6 +3,6 @@ groq
 openai
 langchain
 chromadb
-bycrpt
+bcrypt
 pillow
 python-dotenv 

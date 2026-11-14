@@ -11,6 +11,8 @@ import html
 
 import streamlit as st
 
+from authentifications import get_avatar
+from avatar import avatar_html
 from i18n import language_selector, t
 from interface_auth import logout_button
 
@@ -101,7 +103,7 @@ div[data-testid="stMetricValue"] { color: var(--gold); }
              color: var(--gold); line-height: 1.25; }
 
 /* carte utilisateur */
-.nav-user { padding: .8rem 1rem; margin-bottom: 1rem; border-radius: 12px;
+.nav-user { display: flex; align-items: center; gap: .9rem; padding: .8rem 1rem; margin-bottom: 1rem; border-radius: 12px;
             background: rgba(0,0,0,.35); border: 1px solid rgba(240,207,138,.35); }
 .nav-user-name { font-size: 1.15rem; font-weight: 800; color: var(--txt); word-break: break-word; }
 .nav-role { display: inline-block; margin-top: .35rem; padding: .1rem .7rem; border-radius: 999px;
@@ -143,8 +145,9 @@ def render_navbar(user: dict, role: str, pages: list[str]) -> str:
     bar.markdown(
         f'<div class="nav-brand"><div class="nav-seal">侍</div>'
         f'<div class="nav-title">{html.escape(t("app_name"))}</div></div>'
-        f'<div class="nav-user"><div class="nav-user-name">{html.escape(user["username"])}</div>'
-        f'<span class="nav-role">{html.escape(t("role_" + role))}</span></div>',
+        f'<div class="nav-user">{avatar_html(get_avatar(user["username"]), user["username"], 54)}'
+        f'<div><div class="nav-user-name">{html.escape(user["username"])}</div>'
+        f'<span class="nav-role">{html.escape(t("role_" + role))}</span></div></div>',
         unsafe_allow_html=True,
     )
 

@@ -11,6 +11,7 @@ Comment devient-on admin ?
          python -c "from authentifications import make_admin; print(make_admin('ali'))"
 """
 import os
+import re
 import sqlite3
 from contextlib import closing
 
@@ -50,6 +51,8 @@ def init_db():
     colonnes = [ligne[1] for ligne in cursor.execute("PRAGMA table_info(users)").fetchall()]
     if "role" not in colonnes:
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if "avatar" not in colonnes:             # avatar du joueur (voir avatar.py) ; NULL = avatar par défaut
+        cursor.execute("ALTER TABLE users ADD COLUMN avatar TEXT")
     conn.commit()
     _creer_admin_depuis_env(conn)
     conn.close()
@@ -129,6 +132,45 @@ def get_user_id(username: str):
     row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# --------------------------------------------------------------------------- #
+# Avatars (le dessin/affichage est dans avatar.py ; ici seulement l'enregistrement)
+# --------------------------------------------------------------------------- #
+AVATAR_MAX_CHARS = 100_000            # une photo 128 x 128 en JPEG fait ~10 000 caractères en base64
+_AVATAR_RE = re.compile(r"^(preset:[a-z]{1,20}|data:image/jpeg;base64,[A-Za-z0-9+/=]+)$")
+
+
+def get_avatar(username: str):
+    """Avatar enregistré ("preset:ninja", "data:image/jpeg;base64,...") ou None (avatar par défaut)."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT avatar FROM users WHERE username = ?", (username,)).fetchone()
+    return row[0] if row else None
+
+
+def get_avatars(usernames: list[str]) -> dict:
+    """{nom: avatar} pour plusieurs joueurs en une seule requête (classement, salle d'attente)."""
+    noms = list(dict.fromkeys(usernames))
+    if not noms:
+        return {}
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            f"SELECT username, avatar FROM users WHERE username IN ({','.join('?' * len(noms))})", noms
+        ).fetchall()
+    return {nom: avatar for nom, avatar in rows}
+
+
+def set_avatar(username: str, avatar) -> tuple[bool, str]:
+    """Enregistre l'avatar (None = le retirer). La valeur est vérifiée avant d'être écrite dans la base."""
+    if avatar is not None and (not isinstance(avatar, str) or len(avatar) > AVATAR_MAX_CHARS
+                               or not _AVATAR_RE.match(avatar)):
+        return False, "Avatar invalide."
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        cur = conn.execute("UPDATE users SET avatar = ? WHERE username = ?", (avatar, username))
+        conn.commit()
+    if cur.rowcount == 0:
+        return False, "Utilisateur introuvable."
+    return True, "Avatar enregistré."
 
 
 # --------------------------------------------------------------------------- #

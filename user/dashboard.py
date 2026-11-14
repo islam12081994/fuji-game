@@ -13,8 +13,12 @@ Tableau de bord utilisateur (textes traduits avec i18n.t, langue choisie dans la
 {"code", "name", "players", "nb_questions", "is_public", "questions", ...}
 où room["questions"] = [{"id", "question", "choices": [4 propositions], "answer": index}, ...].
 """
+import html
+
 import streamlit as st
 
+from authentifications import get_avatars
+from avatar import avatar_html
 from i18n import ia_language, t, tm
 from user import questions_ai, rooms
 
@@ -301,15 +305,13 @@ def _q_manual(room: dict, user: dict) -> None:
     n = st.session_state.get("manual_n", 0)      # change après un ajout -> le formulaire se vide
     with st.form(f"form_q_manual_{n}"):
         question = st.text_area(t("m_question"), max_chars=300, key=f"m_q_{n}")
-        choix = [st.text_input(t("m_choice", letter=lettre), max_chars=120, key=f"m_{lettre}_{n}")
-                 for lettre in LETTRES]
-        bonne = st.selectbox(t("m_correct"), list(LETTRES), key=f"m_ok_{n}")
+        reference = st.text_input(t("m_reference"), max_chars=200, key=f"m_ref_{n}")
         envoye = st.form_submit_button(t("m_add"))
 
     if envoye:
         ok, message, _ = rooms.add_questions(
             room["code"], user["id"],
-            [{"question": question, "choices": choix, "answer": LETTRES.index(bonne)}],
+            [{"kind": "open", "question": question, "reference": reference}],
         )
         if ok:
             st.session_state["manual_n"] = n + 1
@@ -376,7 +378,7 @@ def _q_generate(room: dict, user: dict, questions: list, restant: int) -> None:
     if envoye:
         try:
             with st.spinner(t("g_spinner")):
-                generees = questions_ai.generate_questions(
+                generees = questions_ai.generate_open_questions(
                     theme, restant, niveau, exclude=[q["question"] for q in questions],
                     langue=ia_language(),
                 )
@@ -504,9 +506,15 @@ def _lobby_live(user: dict, code: str) -> None:
     st.caption(t("share_code"))
 
     st.subheader(t("players_h", n=len(room["players"]), max=room["max_players"]))
+    avatars = get_avatars([p["username"] for p in room["players"]])
     for p in room["players"]:
         etiquette = " 👑" if p["user_id"] == room["host_id"] else ""
-        st.write(f"- {p['username']}{etiquette}")
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:.7rem;margin:.35rem 0">'
+            f'{avatar_html(avatars.get(p["username"]), p["username"], 40)}'
+            f'<b>{html.escape(p["username"])}</b>{etiquette}</div>',
+            unsafe_allow_html=True,
+        )
 
     if est_hote:
         if pret:

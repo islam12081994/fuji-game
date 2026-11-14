@@ -8,6 +8,8 @@ Deux "espaces" Streamlit :
 """
 import streamlit as st
 
+from avatar import avatar_picker
+
 from authentifications import (
     MIN_PASSWORD,
     ROLE_ADMIN,
@@ -44,6 +46,8 @@ def profile_space(user: dict, titre: bool = True) -> None:
     if titre:
         st.title("Mon profil")
     role = get_user_role(user["username"]) or "user"
+    avatar_picker(user)
+    st.divider()
     st.subheader("Informations")
     st.write(f"**Nom d'utilisateur :** {user['username']}")
     st.write(f"**Identifiant :** {user['id']}")

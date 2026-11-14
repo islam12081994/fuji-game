@@ -1,0 +1,6 @@
+streamlit
+groq
+openai
+langchain
+chromadb
+bycrpt

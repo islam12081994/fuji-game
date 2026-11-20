@@ -14,13 +14,15 @@ Tableau de bord utilisateur (textes traduits avec i18n.t, langue choisie dans la
 où room["questions"] = [{"id", "question", "choices": [4 propositions], "answer": index}, ...].
 """
 import html
+import io
+import os
 
 import streamlit as st
 
 from authentifications import get_avatars
 from avatar import avatar_html
-from i18n import ia_language, t, tm
-from user import questions_ai, rooms
+from i18n import get_lang, ia_language, t, tm
+from user import questions_ai, room_i18n, rooms
 
 LETTRES = "ABCD"
 
@@ -197,12 +199,16 @@ def _page_create(user: dict) -> None:
                             max_chars=40)
         max_joueurs = st.slider(t("max_players"), rooms.MIN_PLAYERS, rooms.MAX_PLAYERS, 6)
         nb_questions = st.slider(t("nb_questions"), rooms.MIN_QUESTIONS, rooms.MAX_QUESTIONS, 10)
+        sans_temps = st.checkbox(t("solo_no_limit"), value=False, help=t("no_time_help"))
+        temps = st.slider(t("time_per_q"), rooms.MIN_TIME, rooms.MAX_TIME, rooms.DEFAULT_TIME, step=5,
+                          help=t("time_per_q_help"))
         publique = st.checkbox(t("public_label"), value=True, help=t("public_help"))
         envoye = st.form_submit_button(t("next_questions"))
 
     if envoye:
         ok, message, code = rooms.create_room(
-            user["id"], user["username"], nom, max_joueurs, nb_questions, is_public=publique
+            user["id"], user["username"], nom, max_joueurs, nb_questions, is_public=publique,
+            time_per_question=rooms.NO_TIME if sans_temps else temps,
         )
         if ok:
             st.session_state["room_code"] = code
@@ -300,19 +306,26 @@ def _page_questions(user: dict) -> None:
 
 
 def _q_manual(room: dict, user: dict) -> None:
-    """Bouton 1 : formulaire pour ajouter une question à la main."""
+    """Bouton 1 : formulaire pour ajouter une question à la main (réponse libre OU à choix)."""
     st.subheader(t("m_title"))
+    genre = st.radio(t("m_kind"), ["open", "qcm"], horizontal=True, key="manual_kind",
+                     format_func=lambda k: t("qtype_" + k))
     n = st.session_state.get("manual_n", 0)      # change après un ajout -> le formulaire se vide
-    with st.form(f"form_q_manual_{n}"):
-        question = st.text_area(t("m_question"), max_chars=300, key=f"m_q_{n}")
-        reference = st.text_input(t("m_reference"), max_chars=200, key=f"m_ref_{n}")
+    with st.form(f"form_q_manual_{genre}_{n}"):
+        question = st.text_area(t("m_question"), max_chars=300, key=f"m_q_{genre}_{n}")
+        if genre == "open":
+            reference = st.text_input(t("m_reference"), max_chars=200, key=f"m_ref_{n}")
+        else:
+            choix = [st.text_input(t("m_choice_n", l=LETTRES[j]), max_chars=120, key=f"m_c{j}_{n}")
+                     for j in range(rooms.NB_CHOICES)]
+            bonne = st.selectbox(t("m_correct"), range(rooms.NB_CHOICES), key=f"m_ok_{n}",
+                                 format_func=lambda j: LETTRES[j])
         envoye = st.form_submit_button(t("m_add"))
 
     if envoye:
-        ok, message, _ = rooms.add_questions(
-            room["code"], user["id"],
-            [{"kind": "open", "question": question, "reference": reference}],
-        )
+        q = ({"kind": "open", "question": question, "reference": reference} if genre == "open"
+             else {"kind": "qcm", "question": question, "choices": choix, "answer": bonne})
+        ok, message, _ = rooms.add_questions(room["code"], user["id"], [q], lang=get_lang())
         if ok:
             st.session_state["manual_n"] = n + 1
             _flash(True, tm(message))
@@ -322,28 +335,29 @@ def _q_manual(room: dict, user: dict) -> None:
 
 
 def _q_propose(room: dict, user: dict, questions: list, restant: int) -> None:
-    """Bouton 2 : l'IA propose des questions À RÉPONSE LIBRE, l'hôte coche celles qu'il garde.
-    Les joueurs répondront par écrit, et l'IA donnera le pourcentage de bonne réponse."""
+    """Bouton 2 : l'IA propose des questions (à choix, à réponse libre ou les deux), l'hôte coche celles qu'il garde."""
     st.subheader(t("p_title"))
     st.caption(t("p_caption"))
     with st.form("form_q_propose"):
         theme = st.text_input(t("theme"), value=t("default_theme"), max_chars=60)
         niveau = st.selectbox(t("difficulty"), questions_ai.DIFFICULTES, index=1,
                               format_func=lambda d: t("diff_" + d))
+        types = st.radio(t("qtype_label"), questions_ai.TYPES, index=2, horizontal=True,
+                         format_func=lambda k: t("qtype_" + k))
         nb = st.slider(t("p_count"), 3, 10, 6)
         envoye = st.form_submit_button(t("p_btn"))
 
     if envoye:
         try:
             with st.spinner(t("p_spinner")):
-                st.session_state["q_proposals"] = questions_ai.generate_open_questions(
-                    theme, nb, niveau, exclude=[q["question"] for q in questions],
+                st.session_state["q_proposals"] = questions_ai.generate_mixed(
+                    theme, nb, niveau, types, exclude=[q["question"] for q in questions],
                     langue=ia_language(),
                 )
         except Exception as e:                       # clé manquante, réseau, réponse invalide...
             st.error(t("ai_error", error=e))
 
-    propositions = [p for p in st.session_state.get("q_proposals", []) if p.get("kind") == "open"]
+    propositions = st.session_state.get("q_proposals", [])
     if not propositions:
         return
 
@@ -352,11 +366,12 @@ def _q_propose(room: dict, user: dict, questions: list, restant: int) -> None:
     choisies = []
     for i, p in enumerate(propositions):
         with st.container(border=True):
-            if st.checkbox(f"**{p['question']}**", key=f"prop_{i}"):
+            etiquette = t("qtype_" + p.get("kind", "open"))
+            if st.checkbox(f"**{p['question']}**  ({etiquette})", key=f"prop_{i}"):
                 choisies.append(p)
 
     if st.button(t("p_add"), key="btn_add_props", disabled=not choisies):
-        ok, message, _ = rooms.add_questions(room["code"], user["id"], choisies)
+        ok, message, _ = rooms.add_questions(room["code"], user["id"], choisies, lang=get_lang())
         if ok:
             st.session_state["q_proposals"] = []
             _flash(True, tm(message))
@@ -366,26 +381,28 @@ def _q_propose(room: dict, user: dict, questions: list, restant: int) -> None:
 
 
 def _q_generate(room: dict, user: dict, questions: list, restant: int) -> None:
-    """Bouton 3 : l'IA génère directement toutes les questions restantes."""
+    """Bouton 3 : l'IA génère directement toutes les questions restantes (type au choix)."""
     st.subheader(t("g_title"))
     st.caption(t("g_caption", n=restant))
     with st.form("form_q_generate"):
         theme = st.text_input(t("theme"), value=t("default_theme"), max_chars=60)
         niveau = st.selectbox(t("difficulty"), questions_ai.DIFFICULTES, index=1,
                               format_func=lambda d: t("diff_" + d))
+        types = st.radio(t("qtype_label"), questions_ai.TYPES, index=2, horizontal=True,
+                         format_func=lambda k: t("qtype_" + k))
         envoye = st.form_submit_button(t("g_btn", n=restant))
 
     if envoye:
         try:
             with st.spinner(t("g_spinner")):
-                generees = questions_ai.generate_open_questions(
-                    theme, restant, niveau, exclude=[q["question"] for q in questions],
+                generees = questions_ai.generate_mixed(
+                    theme, restant, niveau, types, exclude=[q["question"] for q in questions],
                     langue=ia_language(),
                 )
         except Exception as e:
             st.error(t("ai_error", error=e))
             return
-        ok, message, _ = rooms.add_questions(room["code"], user["id"], generees)
+        ok, message, _ = rooms.add_questions(room["code"], user["id"], generees, lang=get_lang())
         if ok:
             _flash(True, tm(message))
             st.rerun()
@@ -468,6 +485,79 @@ def _rooms_list(user: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# QR code et lien direct pour rejoindre une room
+# --------------------------------------------------------------------------- #
+def _app_url() -> str:
+    """Adresse du site, sans « ? » : variable d'environnement APP_URL, sinon l'adresse du navigateur de l'hôte,
+    sinon celle qu'il a saisie. (Pour que le QR code marche sur les téléphones, ce ne doit pas être localhost :
+    mets l'adresse réseau de l'ordinateur, ex. http://192.168.1.20:8501, ou l'adresse publique du site.)"""
+    url = st.session_state.get("app_url") or os.getenv("APP_URL", "").strip()
+    if not url:
+        try:
+            url = str(st.context.url or "")
+        except Exception:                            # ancienne version de Streamlit
+            url = ""
+    if not url.startswith(("http://", "https://")):
+        return ""
+    return url.split("?")[0].rstrip("/")
+
+
+@st.cache_data(show_spinner=False)
+def _qr_png(texte: str) -> bytes | None:
+    try:
+        import segno
+    except ImportError:
+        return None
+    tampon = io.BytesIO()
+    segno.make(texte, error="m").save(tampon, kind="png", scale=8, border=2)
+    return tampon.getvalue()
+
+
+def _qr_block(code: str) -> None:
+    """QR code de la room : le joueur le scanne et arrive directement dans la room (après connexion)."""
+    with st.expander(t("qr_title"), expanded=False):
+        url = _app_url()
+        nouvelle = st.text_input(t("qr_url_label"), value=url, key=f"qr_url_{code}",
+                                 help=t("qr_url_help"))
+        if nouvelle.strip() and nouvelle.strip().rstrip("/") != url:
+            st.session_state["app_url"] = nouvelle.strip().rstrip("/")
+            url = st.session_state["app_url"]
+        if not url:
+            st.info(t("qr_need_url"))
+            return
+        if any(h in url for h in ("localhost", "127.0.0.1")):
+            st.warning(t("qr_localhost"))
+        lien = f"{url}/?room={code}"
+        png = _qr_png(lien)
+        if png is None:
+            st.error(t("qr_missing"))
+        else:
+            st.image(png, width=240)
+        st.caption(t("qr_help"))
+        st.code(lien, language=None)
+
+
+def handle_join_link(user: dict) -> None:
+    """À appeler dans main.py après la connexion : si le joueur est arrivé par un lien / QR code « ?room=CODE »,
+    il rejoint directement la room (salle d'attente, ou partie en cours s'il y était déjà)."""
+    code = st.session_state.pop("pending_room", None)
+    if not code:
+        return
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    _setup()
+    ok, message = rooms.join_room(code, user["id"], user["username"])
+    if ok:
+        room = rooms.get_room(code)
+        st.session_state["room_code"] = room["code"]
+        st.session_state["dash_page"] = "game" if room["status"] == rooms.PLAYING else "lobby"
+        st.session_state["nav_page"] = "dashboard"
+    _flash(ok, tm(message))
+
+
+# --------------------------------------------------------------------------- #
 # Salle d'attente (se met à jour toute seule toutes les 3 secondes)
 # --------------------------------------------------------------------------- #
 def _page_lobby(user: dict) -> None:
@@ -499,11 +589,15 @@ def _lobby_live(user: dict, code: str) -> None:
     est_hote = room["host_id"] == user["id"]
     nb_prets = rooms.count_questions(room["id"])
     pret = nb_prets >= room["nb_questions"]
+    if pret:                                         # prépare les questions dans la langue de ce joueur (traduction)
+        room_i18n.localize_questions(room["id"], get_lang())
 
     st.title(room["name"])
     st.caption(t("lobby_info", host=room["host_name"], q=room["nb_questions"], vis=_visibilite(room)))
+    st.caption(t("lobby_time", s=room["time_per_question"]) if room["time_per_question"] else t("lobby_no_time"))
     st.markdown(f'<div class="room-code">{room["code"]}</div>', unsafe_allow_html=True)
     st.caption(t("share_code"))
+    _qr_block(room["code"])
 
     st.subheader(t("players_h", n=len(room["players"]), max=room["max_players"]))
     avatars = get_avatars([p["username"] for p in room["players"]])
@@ -588,6 +682,9 @@ def _page_game(user: dict, jeu) -> None:
     if st.button(t("quit_game"), key="btn_quit_game"):
         st.session_state["solo"] = None
         if room:
+            if room["status"] == rooms.PLAYING:
+                rooms.mark_left(code, user["id"])         # la partie se met en pause pour les autres joueurs
+                st.session_state[f"left_{room['id']}"] = True
             rooms.leave_room(code, user["id"])
         st.session_state["room_code"] = None
         _goto("home")

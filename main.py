@@ -22,9 +22,15 @@ from authentifications import ROLE_ADMIN, get_user_role      # noqa: E402
 from espaces import admin_space, profile_space               # noqa: E402
 from interface_auth import require_auth                      # noqa: E402
 from navbar import render_navbar                             # noqa: E402
-from user.dashboard import restore_room, user_dashboard      # noqa: E402
+from user.dashboard import handle_join_link, restore_room, user_dashboard      # noqa: E402
 from user.game import play                                   # noqa: E402
 
+
+# Lien / QR code d'une room : https://ton-site/?room=ABCDE -> on retient le code, puis le joueur le rejoint
+# automatiquement une fois connecté (même s'il doit d'abord se connecter ou créer un compte).
+_code_lien = st.query_params.get("room")
+if _code_lien:
+    st.session_state["pending_room"] = str(_code_lien).strip().upper()[:10]
 
 user = require_auth()                       # bloque tant que l'utilisateur n'est pas connecté
                                             # (la page de connexion contient son propre sélecteur de langue)
@@ -38,6 +44,7 @@ if role is None:                            # compte supprimé : on déconnecte
     st.rerun()
 
 restore_room(user)                          # retrouve sa room enregistrée (en attente ou en cours)
+handle_join_link(user)                      # lien / QR code ?room=CODE : rejoint directement la room
 
 pages = ["dashboard", "profile"]
 if role == ROLE_ADMIN:

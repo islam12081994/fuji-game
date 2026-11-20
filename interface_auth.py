@@ -525,7 +525,7 @@ def require_auth() -> dict:
 
 
 _APP_KEYS = ("dash_page", "dash_flash", "room_code", "q_mode", "q_proposals", "manual_n",
-             "solo", "admin_flash", "restored_for")
+             "solo", "admin_flash", "restored_for", "pending_room", "app_url")
 
 
 def logout_button(label: str | None = None) -> None:

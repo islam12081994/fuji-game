@@ -203,13 +203,14 @@ def _page_create(user: dict) -> None:
         temps = st.slider(t("time_per_q"), rooms.MIN_TIME, rooms.MAX_TIME, rooms.DEFAULT_TIME, step=5,
                           help=t("time_per_q_help"))
         paris = st.checkbox(t("wager_label"), value=True, help=t("wager_help"))
+        penalite = st.checkbox(t("wager_penalty_label"), value=True, help=t("wager_penalty_help"))
         publique = st.checkbox(t("public_label"), value=True, help=t("public_help"))
         envoye = st.form_submit_button(t("next_questions"))
 
     if envoye:
         ok, message, code = rooms.create_room(
             user["id"], user["username"], nom, max_joueurs, nb_questions, is_public=publique,
-            time_per_question=rooms.NO_TIME if sans_temps else temps, wager_mode=paris,
+            time_per_question=rooms.NO_TIME if sans_temps else temps, wager_mode=paris, wager_penalty=penalite,
         )
         if ok:
             st.session_state["room_code"] = code
@@ -657,7 +658,7 @@ def _lobby_live(user: dict, code: str) -> None:
     st.caption(t("lobby_info", host=room["host_name"], q=room["nb_questions"], vis=_visibilite(room)))
     st.caption(t("lobby_time", s=room["time_per_question"]) if room["time_per_question"] else t("lobby_no_time"))
     if room["wager_mode"]:
-        st.caption(t("lobby_wager"))
+        st.caption(t("lobby_wager_pen") if room["wager_level"] == 2 else t("lobby_wager"))
     st.markdown(f'<div class="room-code">{room["code"]}</div>', unsafe_allow_html=True)
     st.caption(t("share_code"))
     _qr_block(room["code"])

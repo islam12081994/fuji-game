@@ -25,6 +25,7 @@ import time
 
 import streamlit as st
 
+from loader import show_gif
 from i18n import LANGUES, get_lang, ia_language, t, tm
 from user import grading, room_i18n, rooms
 from user import questions_ai
@@ -178,7 +179,7 @@ def _play_room(user: dict, room: dict) -> None:
         st.caption(t("g_translated", lang=LANGUES[get_lang()]))
     room = rooms.sync_room(room["code"]) or room
     est_hote = room["host_id"] == user["id"]
-    wm = room["wager_mode"]
+    wm = room["wager_level"]
     if st.session_state.pop(f"left_{room['id']}", False):
         st.toast(t("g_welcome_back"))
 
@@ -196,6 +197,7 @@ def _play_room(user: dict, room: dict) -> None:
     if rooms.countdown_left(room) > 0:
         st.markdown(f'<h2 style="text-align:center;margin-top:2rem">{html.escape(t("g_starting_in"))}</h2>',
                     unsafe_allow_html=True)
+        show_gif(380)                                        # le GIF reste affiché pendant tout le compte à rebours
         _countdown(room["code"], user["id"], _etat(room))
         return
 
@@ -299,7 +301,7 @@ def _choisir_mise(cle: str, valeur: int) -> None:
 def _grille_mises(room: dict, user_id: int, idx: int, cle: str, choisie) -> None:
     """Grille des mises 1..N-1 : une mise déjà utilisée dans la partie est désactivée (elle ne sert qu'une fois)."""
     st.markdown(f"**{t('g_wager_h')}**")
-    st.caption(t("g_wager_help"))
+    st.caption(t("g_wager_help_pen") if room["wager_level"] == 2 else t("g_wager_help"))
     options = rooms.wager_options(room, user_id, idx)
     utilisees = rooms.used_wagers(room["id"], user_id)
     for debut in range(0, len(options), 5):
@@ -393,7 +395,7 @@ def _host_answered(room_id: int, current_q: int) -> None:
     st.caption(t("g_answered_count", n=n, total=total))
 
 
-def _prev_result(questions: list, answers: dict, idx: int, wm: bool = False) -> None:
+def _prev_result(questions: list, answers: dict, idx: int, wm=0) -> None:
     """Rappel de ton résultat à la question précédente, au-dessus de la question en cours."""
     if idx == 0:
         return
@@ -407,7 +409,7 @@ def _prev_result(questions: list, answers: dict, idx: int, wm: bool = False) -> 
             pct = max(0, min(100, int(round(rec["score"]))))
             gain = ""
             if wm:
-                pts = rooms.answer_points(True, idx - 1 == len(questions) - 1, rec["wager"], rec["score"])
+                pts = rooms.answer_points(wm, idx - 1 == len(questions) - 1, rec["wager"], rec["score"])
                 gain = f"  ({pts:+.1f} pts)".replace(".0 pts", " pts")
             st.markdown(f'<span style="color:{_couleur(pct)};font-weight:800;font-size:1.3rem">{pct} %  -  '
                         f'{html.escape(_verdict(pct))}{html.escape(gain)}</span>', unsafe_allow_html=True)
@@ -425,7 +427,7 @@ def _decider(code: str, host_id: int, question_id: int, user_id: int, pourcentag
 
 
 def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, user_id: int, prefixe: str,
-                    wm: bool = False, finale: bool = False) -> None:
+                    wm=0, finale: bool = False) -> None:
     """Une ligne : joueur, sa réponse, son pourcentage (et sa mise / ses points) ; l'hôte a en plus les boutons
     de correction."""
     pct = int(round(a["score"]))
@@ -441,7 +443,7 @@ def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, use
         origine = t("h_by_host") if a["verdict"] is not None else (a["comment"] or "")
         gain = ""
         if wm:
-            pts = rooms.answer_points(True, finale, a["wager"], a["score"])
+            pts = rooms.answer_points(wm, finale, a["wager"], a["score"])
             gain = t("g_wager_gain", w=a["wager"] or 0, pts=f"{pts:+.1f}".replace(".0", ""))
         detail = (f'« {html.escape(reponse)} »  \n<span style="color:{c};font-weight:800">{pct} %  -  '
                   f'{html.escape(_verdict(pct))}</span> <span style="opacity:.7">{html.escape(origine)}</span>'
@@ -466,7 +468,7 @@ def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, use
 
 @st.fragment(run_every=2)
 def _review(code: str, room_id: int, q: dict, idx: int, host_id: int, user_id: int, total: int,
-            wm: bool = False) -> None:
+            wm=0) -> None:
     """Résultats de la question qui vient de se terminer : réponse de chaque joueur et son pourcentage.
     L'hôte peut modifier chaque score ; le classement en dessous se met à jour tout de suite."""
     st.subheader(t("g_review_title", n=idx + 1))
@@ -480,7 +482,7 @@ def _review(code: str, room_id: int, q: dict, idx: int, host_id: int, user_id: i
 
 
 @st.fragment(run_every=3)
-def _final_live(room_id: int, user_id: int, wm: bool = False) -> None:
+def _final_live(room_id: int, user_id: int, wm=0) -> None:
     """Résultat final du joueur (se met à jour si l'hôte corrige une réponse après la partie)."""
     questions = room_i18n.localize_questions(room_id, get_lang(), allow_ai=False)
     answers = rooms.get_answers(room_id, user_id)
@@ -493,7 +495,7 @@ def _final_live(room_id: int, user_id: int, wm: bool = False) -> None:
 
 
 @st.fragment(run_every=3)
-def _host_panel(code: str, room_id: int, host_id: int, questions: list, wm: bool = False) -> None:
+def _host_panel(code: str, room_id: int, host_id: int, questions: list, wm=0) -> None:
     """Fin de partie : l'hôte peut encore modifier le score de n'importe quelle réponse."""
     par_id = {q["id"]: (i, q) for i, q in enumerate(questions, start=1)}
     with st.expander(t("h_panel_title"), expanded=False):
@@ -511,7 +513,7 @@ def _host_panel(code: str, room_id: int, host_id: int, questions: list, wm: bool
 
 
 @st.fragment(run_every=3)
-def _classement(room_id: int, total: int, user_id: int, detail: bool, wm: bool = False) -> None:
+def _classement(room_id: int, total: int, user_id: int, detail: bool, wm=0) -> None:
     """Classement en direct (se met à jour tout seul toutes les 3 secondes).
     detail = True une fois la partie terminée : tableau des pourcentages de chaque joueur par question."""
     lignes = rooms.scoreboard(room_id)

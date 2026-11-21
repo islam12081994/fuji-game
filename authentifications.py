@@ -60,7 +60,7 @@ def init_db():
 
 def _creer_admin_depuis_env(conn):
     """Crée (ou promeut) le compte admin décrit dans .env : ADMIN_USERNAME / ADMIN_PASSWORD."""
-    nom = os.getenv("ADMIN_USERNAME").strip()
+    nom = (os.getenv("ADMIN_USERNAME") or "").strip()
     mdp = os.getenv("ADMIN_PASSWORD")
     if not nom or not mdp:
         return

@@ -1,6 +1,6 @@
 """
 navbar.py
-Thème global (texte clair et bien lisible) + barre de navigation latérale,
+Thème global (texte clair et bien lisible) + barre de navigation en haut de la page,
 dans la même ambiance que la page de connexion (rouge, or, sanctuaire japonais).
 
 Utilisation (dans main.py, une fois l'utilisateur connecté) :
@@ -80,56 +80,54 @@ div[data-testid="stMetricValue"] { color: var(--gold); }
     background: linear-gradient(100deg, #86101a, var(--red-bright)); border-color: var(--gold);
 }
 
-/* ===================== Barre latérale ===================== */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #2a0a0f 0%, #120708 100%);
-    border-right: 2px solid var(--red);
-    box-shadow: 4px 0 24px rgba(0,0,0,.55);
-    min-width: 270px;
+/* ===================== Barre de navigation (en haut) ===================== */
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display: none !important; }
+.block-container { padding-top: 4rem !important; max-width: 1300px !important; }
+.st-key-topbar {
+    background: linear-gradient(180deg, #2a0a0f 0%, #170809 100%);
+    border: 1px solid rgba(240,207,138,.35); border-bottom: 2px solid var(--red);
+    border-radius: 14px; padding: .55rem 1rem; margin-bottom: 1.4rem;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
 }
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span { color: var(--txt); }
+.st-key-topbar [data-testid="stHorizontalBlock"] { align-items: center; gap: .8rem; }
 
 /* marque : sceau + nom */
-.nav-brand { display: flex; align-items: center; gap: .8rem; padding: .4rem .2rem 1rem;
-             border-bottom: 1px solid rgba(240,207,138,.3); margin-bottom: 1rem; }
+.nav-brand { display: flex; align-items: center; gap: .7rem; }
 .nav-seal {
-    flex: 0 0 auto; width: 52px; height: 52px; border-radius: 50%;
+    flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     background: radial-gradient(circle, #111 55%, #2a060b 100%);
     border: 3px solid var(--red); outline: 1px solid rgba(163,18,28,.6); outline-offset: 2px;
-    font-size: 1.7rem; color: var(--txt); line-height: 1;
+    font-size: 1.4rem; color: var(--txt); line-height: 1;
 }
-.nav-title { font-family: 'Cinzel', 'Cairo', serif; font-weight: 800; font-size: 1.05rem;
-             color: var(--gold); line-height: 1.25; }
+.nav-title { font-family: 'Cinzel', 'Cairo', serif; font-weight: 800; font-size: .85rem;
+             color: var(--gold); line-height: 1.2; }
 
-/* carte utilisateur */
-.nav-user { display: flex; align-items: center; gap: .9rem; padding: .8rem 1rem; margin-bottom: 1rem; border-radius: 12px;
-            background: rgba(0,0,0,.35); border: 1px solid rgba(240,207,138,.35); }
-.nav-user-name { font-size: 1.15rem; font-weight: 800; color: var(--txt); word-break: break-word; }
-.nav-role { display: inline-block; margin-top: .35rem; padding: .1rem .7rem; border-radius: 999px;
-            background: var(--red); color: #fff; font-size: .85rem; font-weight: 700; letter-spacing: .03em; }
+/* utilisateur */
+.nav-user { display: flex; align-items: center; gap: .6rem; justify-content: flex-end; }
+.nav-user-name { font-size: 1rem; font-weight: 800; color: var(--txt); word-break: break-word; line-height: 1.1; }
+.nav-role { display: inline-block; margin-top: .2rem; padding: 0 .6rem; border-radius: 999px;
+            background: var(--red); color: #fff; font-size: .75rem; font-weight: 700; letter-spacing: .03em; }
 
-/* menu de navigation (boutons radio transformés en rubans) */
-[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] { gap: .45rem; }
-[data-testid="stSidebar"] [data-testid="stRadio"] label {
-    width: 100%; padding: .65rem .9rem; border-radius: 10px; cursor: pointer;
+/* menu de navigation : boutons radio transformés en rubans, alignés horizontalement */
+.st-key-topbar [data-testid="stRadio"] [role="radiogroup"] { gap: .5rem; flex-wrap: nowrap; justify-content: center; }
+.st-key-topbar [data-testid="stRadioOption"] {
+    padding: .5rem .9rem; border-radius: 10px; cursor: pointer;
     background: rgba(0,0,0,.40); border: 1px solid rgba(240,207,138,.35);
-    transition: background .12s ease, border-color .12s ease, transform .12s ease;
+    transition: background .12s ease, border-color .12s ease;
 }
-[data-testid="stSidebar"] [data-testid="stRadio"] label > div:first-child { display: none; }   /* cache le rond */
-[data-testid="stSidebar"] [data-testid="stRadio"] label p { font-size: 1.08rem; font-weight: 700; color: var(--txt) !important; }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-    border-color: var(--gold); background: rgba(163,18,28,.35); transform: translateX(3px);
-}
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+.st-key-topbar [data-testid="stRadioOption"] > div > div:first-child { display: none; }   /* cache le rond */
+.st-key-topbar [data-testid="stRadioOption"] p { font-size: 1rem; font-weight: 700; color: var(--txt) !important; }
+.st-key-topbar [data-testid="stRadioOption"]:hover { border-color: var(--gold); background: rgba(163,18,28,.35); }
+.st-key-topbar [data-testid="stRadioOption"]:has(input:checked) {
     background: linear-gradient(100deg, #86101a, var(--red-bright));
     border-color: var(--gold); box-shadow: 0 4px 14px rgba(163,18,28,.5);
 }
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p { color: #fff !important; }
+.st-key-topbar [data-testid="stRadioOption"]:has(input:checked) p { color: #fff !important; }
 
 /* déconnexion */
 .st-key-logout_btn button {
-    width: 100%; min-height: 2.8rem; background: rgba(0,0,0,.45); color: var(--txt);
+    width: 100%; min-height: 2.6rem; background: rgba(0,0,0,.45); color: var(--txt);
     border: 1px solid rgba(240,207,138,.7); border-radius: 8px; font-weight: 700;
 }
 .st-key-logout_btn button:hover { border-color: var(--gold); background: rgba(163,18,28,.45); color: #fff; }
@@ -138,28 +136,28 @@ div[data-testid="stMetricValue"] { color: var(--gold); }
 
 
 def render_navbar(user: dict, role: str, pages: list[str]) -> str:
-    """Applique le thème, dessine la barre latérale et retourne la page choisie ("dashboard", "profile", "admin")."""
+    """Applique le thème, dessine la barre de navigation EN HAUT de la page et retourne la page choisie
+    ("dashboard", "profile", "admin")."""
     st.markdown(CSS, unsafe_allow_html=True)
-    bar = st.sidebar
 
-    bar.markdown(
-        f'<div class="nav-brand"><div class="nav-seal">侍</div>'
-        f'<div class="nav-title">{html.escape(t("app_name"))}</div></div>'
-        f'<div class="nav-user">{avatar_html(get_avatar(user["username"]), user["username"], 54)}'
-        f'<div><div class="nav-user-name">{html.escape(user["username"])}</div>'
-        f'<span class="nav-role">{html.escape(t("role_" + role))}</span></div></div>',
-        unsafe_allow_html=True,
-    )
-
-    page = bar.radio(
-        t("navigation"),
-        pages,
-        format_func=lambda p: f"{ICONS.get(p, '•')}  {t('nav_' + p)}",
-        label_visibility="collapsed",
-        key="nav_page",
-    )
-
-    bar.divider()
-    language_selector(where="sidebar", key="lang_widget")
-    logout_button()
+    with st.container(key="topbar"):
+        c_marque, c_menu, c_langue, c_user, c_sortir = st.columns([2.3, 5, 1.7, 2.2, 1.8], vertical_alignment="center")
+        c_marque.markdown(
+            f'<div class="nav-brand"><div class="nav-seal">侍</div>'
+            f'<div class="nav-title">{html.escape(t("app_name"))}</div></div>', unsafe_allow_html=True)
+        with c_menu:
+            page = st.radio(
+                t("navigation"), pages, horizontal=True,
+                format_func=lambda p: f"{ICONS.get(p, '•')}  {t('nav_' + p)}",
+                label_visibility="collapsed", key="nav_page",
+            )
+        with c_langue:
+            language_selector(where="main", key="lang_widget", compact=True)
+        c_user.markdown(
+            f'<div class="nav-user">{avatar_html(get_avatar(user["username"]), user["username"], 44)}'
+            f'<div><div class="nav-user-name">{html.escape(user["username"])}</div>'
+            f'<span class="nav-role">{html.escape(t("role_" + role))}</span></div></div>',
+            unsafe_allow_html=True)
+        with c_sortir:
+            logout_button()
     return page

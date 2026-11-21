@@ -31,7 +31,8 @@ Au lancement, un COMPTE À REBOURS (COUNTDOWN_SECONDS) précède la première qu
 MODE PARIS (wager_mode, choisi par l'hôte à la création) :
   - avant chaque question (sauf la dernière) le joueur choisit une mise de 1 à N-1 points (N = nombre de
     questions) ; une mise ne peut servir QU'UNE SEULE FOIS dans la partie (elle devient désactivée ensuite) ;
-    points gagnés = mise x pourcentage / 100, rien n'est perdu si la réponse est fausse ;
+    points gagnés = mise x pourcentage / 100 ; si la réponse est fausse (<= 50 %) le joueur PERD sa mise
+    (option « pénalité », activée par défaut ; sans elle, rien n'est perdu sur les questions normales) ;
   - la DERNIÈRE question est la question finale : le joueur mise 0, S ou 2xS points (S = son score actuel,
     10 au minimum) ; si sa réponse est fausse (pourcentage <= 50), il PERD sa mise (le score peut devenir négatif).
 Sans mode paris : 1 point par question x pourcentage / 100, comme avant.
@@ -108,7 +109,7 @@ def init_rooms_db() -> None:
             conn.execute("ALTER TABLE rooms ADD COLUMN phase TEXT NOT NULL DEFAULT 'answering'")
             conn.execute("ALTER TABLE rooms ADD COLUMN paused_at REAL")
         if "wager_mode" not in colonnes:
-            conn.execute("ALTER TABLE rooms ADD COLUMN wager_mode INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE rooms ADD COLUMN wager_mode INTEGER NOT NULL DEFAULT 0")   # 0 non, 1 oui, 2 oui + pénalité
         conn.execute("""
             CREATE TABLE IF NOT EXISTS room_players (
                 room_id INTEGER NOT NULL,
@@ -188,7 +189,7 @@ def create_room(host_id: int, host_name: str, name: str = "",
                 max_players: int = 6, nb_questions: int = 10,
                 is_public: bool = True,
                 time_per_question: int = DEFAULT_TIME,
-                wager_mode: bool = False) -> tuple[bool, str, str | None]:
+                wager_mode: bool = False, wager_penalty: bool = True) -> tuple[bool, str, str | None]:
     """Crée une room et y place l'hôte. Retourne (ok, message, code)."""
     if not (MIN_PLAYERS <= max_players <= MAX_PLAYERS):
         return False, f"Le nombre de joueurs doit être entre {MIN_PLAYERS} et {MAX_PLAYERS}.", None
@@ -218,7 +219,7 @@ def create_room(host_id: int, host_name: str, name: str = "",
                     "INSERT INTO rooms (code, name, host_id, max_players, nb_questions, is_public, "
                     "time_per_question, wager_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (code, name, host_id, max_players, nb_questions, int(is_public), int(time_per_question),
-                     int(wager_mode)),
+                     (2 if wager_penalty else 1) if wager_mode else 0),
                 )
                 break
             except sqlite3.IntegrityError:
@@ -250,6 +251,7 @@ def get_room(code: str):
         "is_public": bool(row[7]),
         "time_per_question": row[8], "current_q": row[9], "q_started_at": row[10],
         "phase": row[11], "paused_at": row[12], "wager_mode": bool(row[13]),
+        "wager_level": int(row[13] or 0),                     # 0 sans paris, 1 paris, 2 paris + pénalité
         "players": [{"user_id": p[0], "username": p[1], "last_seen": p[2], "skipped": bool(p[3])}
                     for p in players],
     }
@@ -638,16 +640,17 @@ def submit_open_answer(code: str, user_id: int, question_id: int, text: str,
 # --------------------------------------------------------------------------- #
 # Mode paris : mises, points
 # --------------------------------------------------------------------------- #
-def answer_points(wager_mode: bool, is_final: bool, wager, score) -> float:
+def answer_points(wager_mode, is_final: bool, wager, score) -> float:
     """Points rapportés par UNE réponse.
     - sans mode paris : pourcentage / 100 (1 point maximum par question) ;
-    - mode paris, question normale : mise x pourcentage / 100 (une réponse fausse ne fait rien perdre) ;
+    - mode paris, question normale : mise x pourcentage / 100 ; avec la pénalité (wager_mode == 2) une réponse
+      fausse fait PERDRE la mise ;
     - mode paris, question FINALE : mise x pourcentage / 100 si la réponse est vraie (> 50 %), sinon on PERD la mise."""
     score = score or 0
     if not wager_mode:
         return score / 100
     mise = wager or 0
-    if is_final:
+    if is_final or wager_mode == 2:
         return mise * score / 100 if score > SEUIL_VRAI else -float(mise)
     return mise * score / 100
 
@@ -659,7 +662,7 @@ def _final_question_id(conn, room_id: int):
 
 def _points_by_player(conn, room_id: int) -> dict:
     """{user_id: [points, nombre de réponses]} pour la room."""
-    wm = bool(conn.execute("SELECT wager_mode FROM rooms WHERE id = ?", (room_id,)).fetchone()[0])
+    wm = int(conn.execute("SELECT wager_mode FROM rooms WHERE id = ?", (room_id,)).fetchone()[0] or 0)
     finale = _final_question_id(conn, room_id)
     out: dict = {}
     for uid, qid, score, mise in conn.execute(

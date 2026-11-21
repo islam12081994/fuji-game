@@ -26,6 +26,7 @@ import streamlit as st
 
 # Adapte ce nom de module : c'est le fichier qui contient ton code SQLite/bcrypt.
 from authentifications import get_user_id, get_user_role, init_db, login_user, register_user
+from loader import loading_screen
 from i18n import language_selector, t, tm
 
 # ====================== PHOTO DE FOND ======================
@@ -267,13 +268,17 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 
 /* ---------- Bouton principal : coup de pinceau rouge, centré et long ---------- */
+.st-key-auth_card .stElementContainer:has([data-testid="stFormSubmitButton"]),
+.st-key-auth_card [data-testid="stFormSubmitButton"] > div { width: 100% !important; }
 .st-key-auth_card [data-testid="stFormSubmitButton"] {
     display: flex;
+    width: 100%;
     justify-content: center;
 }
 .st-key-auth_card [data-testid="stFormSubmitButton"] button {
     flex: 0 0 auto;
-    width: calc(100% + 2.6rem);   /* dépasse un peu des champs : plus long */
+    width: 82%;                   /* long mais centré, comme sur la maquette */
+    margin: 0 auto;
     min-height: 3.4rem;
     padding: 0 3rem;
     border: none;
@@ -291,6 +296,9 @@ header[data-testid="stHeader"] { background: transparent; }
     transition: filter .12s ease;
 }
 .st-key-auth_card [data-testid="stFormSubmitButton"] button:hover { filter: brightness(1.18); }
+.st-key-auth_card [data-testid="stFormSubmitButton"] button p {
+    font-family: 'Playfair Display', serif; font-style: italic; font-weight: 700; font-size: 1.4rem; color: var(--cream);
+}
 
 /* ---------- Bouton « Créer un compte » ---------- */
 .st-key-switch_mode { width: 82%; margin: .2rem auto 0; }
@@ -440,6 +448,7 @@ def _login_view() -> None:
                 st.session_state.authenticated = True
                 st.session_state.user = {"id": get_user_id(username), "username": username,
                                          "role": get_user_role(username)}
+                st.session_state["login_loading"] = True      # GIF de chargement (affiché hors du panneau)
                 st.rerun()
             else:
                 st.error(tm(message))
@@ -500,6 +509,9 @@ def render_auth() -> bool:
     _init_state()
 
     if st.session_state.authenticated:
+        if st.session_state.pop("login_loading", False):
+            loading_screen(text=t("loading"))            # GIF plein écran pendant 5 secondes après la connexion
+            st.rerun()
         return True
 
     st.markdown(CSS, unsafe_allow_html=True)
@@ -529,9 +541,9 @@ _APP_KEYS = ("dash_page", "dash_flash", "room_code", "q_mode", "q_proposals", "m
              "manual_unverified")
 
 
-def logout_button(label: str | None = None) -> None:
-    """Bouton de déconnexion (placé dans la sidebar)."""
-    if st.sidebar.button(label or t("logout"), key="logout_btn", use_container_width=True):
+def logout_button(label: str | None = None, zone=None) -> None:
+    """Bouton de déconnexion (dans la barre de navigation du haut, ou dans `zone`)."""
+    if (zone or st).button(label or t("logout"), key="logout_btn", use_container_width=True):
         utilisateur = st.session_state.get("user")
         if utilisateur:                               # se déconnecter = quitter automatiquement ses rooms
             try:

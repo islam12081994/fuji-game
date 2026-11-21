@@ -214,6 +214,31 @@ def change_password(username: str, old_password: str, new_password: str) -> tupl
     return True, "Mot de passe modifié."
 
 
+MIN_USERNAME = 3
+
+
+def change_username(user_id: int, new_username: str) -> tuple[bool, str]:
+    """Change le nom d'utilisateur du compte `user_id` (nom unique). Met aussi à jour le nom affiché dans les rooms."""
+    new_username = (new_username or "").strip()
+    if len(new_username) < MIN_USERNAME:
+        return False, f"Le nom d'utilisateur doit contenir au moins {MIN_USERNAME} caractères."
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        actuel = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+        if actuel is None:
+            return False, "Utilisateur introuvable."
+        if actuel[0] == new_username:
+            return True, "Nom d'utilisateur modifié."
+        if conn.execute("SELECT 1 FROM users WHERE username = ? AND id <> ?", (new_username, user_id)).fetchone():
+            return False, "Ce nom d'utilisateur existe déjà."
+        conn.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+        try:                                   # le nom est aussi copié dans les rooms (table créée par user/rooms.py)
+            conn.execute("UPDATE room_players SET username = ? WHERE user_id = ?", (new_username, user_id))
+        except sqlite3.OperationalError:
+            pass
+        conn.commit()
+    return True, "Nom d'utilisateur modifié."
+
+
 # --------------------------------------------------------------------------- #
 # Espace admin : chaque fonction vérifie elle-même que l'appelant est admin
 # (on ne se fie pas seulement à l'interface)

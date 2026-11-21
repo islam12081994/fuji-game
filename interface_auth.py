@@ -525,16 +525,24 @@ def require_auth() -> dict:
 
 
 _APP_KEYS = ("dash_page", "dash_flash", "room_code", "q_mode", "q_proposals", "manual_n",
-             "solo", "admin_flash", "restored_for", "pending_room", "app_url")
+             "solo", "admin_flash", "restored_for", "pending_room", "app_url", "manual_check",
+             "manual_unverified")
 
 
 def logout_button(label: str | None = None) -> None:
     """Bouton de déconnexion (placé dans la sidebar)."""
     if st.sidebar.button(label or t("logout"), key="logout_btn", use_container_width=True):
+        utilisateur = st.session_state.get("user")
+        if utilisateur:                               # se déconnecter = quitter automatiquement ses rooms
+            try:
+                from user import rooms
+                rooms.leave_all_rooms(utilisateur["id"])
+            except Exception:
+                pass
         st.session_state.authenticated = False
         st.session_state.user = None
         st.session_state.auth_page = "login"
-        # On vide l'état de navigation (la room, elle, reste enregistrée dans la base : on la retrouve à la reconnexion)
+        # On vide l'état de navigation : à la reconnexion on arrive sur l'ACCUEIL, pas dans une room
         for cle in list(st.session_state.keys()):
             if cle in _APP_KEYS or cle.startswith("game_last"):
                 del st.session_state[cle]

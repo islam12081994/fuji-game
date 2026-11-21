@@ -9,12 +9,14 @@ Deux "espaces" Streamlit :
 import streamlit as st
 
 from avatar import avatar_picker
+from i18n import t, tm
 
 from authentifications import (
     MIN_PASSWORD,
     ROLE_ADMIN,
     ROLES,
     change_password,
+    change_username,
     delete_user,
     get_user_role,
     list_users,
@@ -52,6 +54,19 @@ def profile_space(user: dict, titre: bool = True) -> None:
     st.write(f"**Nom d'utilisateur :** {user['username']}")
     st.write(f"**Identifiant :** {user['id']}")
     st.write(f"**Rôle :** {role}")
+
+    st.subheader(t("profile_rename_h"))
+    with st.form("form_change_nom"):
+        nouveau_nom = st.text_input(t("profile_new_username"), value=user["username"], max_chars=30)
+        envoye_nom = st.form_submit_button(t("profile_rename_btn"))
+    if envoye_nom:
+        ok, message = change_username(user["id"], nouveau_nom)
+        if ok:
+            st.session_state.user["username"] = nouveau_nom.strip()
+            st.session_state["dash_flash"] = (True, tm(message))
+            st.rerun()
+        else:
+            st.error(tm(message))
 
     st.subheader("Changer mon mot de passe")
     with st.form("form_change_mdp", clear_on_submit=True):

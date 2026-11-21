@@ -173,6 +173,43 @@ def generate_mixed(theme: str, n: int, difficulte: str = "moyen", types: str = "
     return resultat[:n]
 
 
+def verify_question(question: str, kind: str, reference: str = "", choices=None, answer: int = 0,
+                    langue: str = "français") -> dict:
+    """Fait vérifier par l'IA la réponse que l'hôte a donnée à sa propre question (réponse libre ou QCM).
+    Retourne {"correct": bool, "right_answer": "...", "right_index": int ou None, "comment": "..."}.
+    Pour un QCM : right_index = index (0 à 3) de la bonne proposition selon l'IA (None si aucune ne convient)."""
+    if kind == "open":
+        donnee = f"Réponse proposée par l'auteur : {reference}"
+        format_json = '{"correct": true ou false, "right_answer": "<la bonne réponse, courte>", "comment": "<une phrase>"}'
+    else:
+        lignes = "\n".join(f"{i}. {c}" for i, c in enumerate(choices or []))
+        donnee = f"Propositions :\n{lignes}\nBonne réponse choisie par l'auteur : {answer}. {(choices or [''])[answer]}"
+        format_json = ('{"correct": true ou false, "right_index": <index 0 à 3 de la bonne proposition, ou -1 si '
+                       'aucune>, "right_answer": "<la bonne réponse>", "comment": "<une phrase>"}')
+    consigne = (
+        "Tu vérifies une question de quiz de culture générale écrite par un utilisateur. "
+        "Dis si la réponse donnée par l'auteur est FACTUELLEMENT correcte pour cette question. "
+        "Si elle est fausse, donne la bonne réponse. Si la question est ambiguë ou si plusieurs réponses sont "
+        "possibles, explique-le dans le commentaire. Ne mets correct = false que si tu es sûr de l'erreur.\n\n"
+        f"Question : {question}\n{donnee}\n\n"
+        f"Réponds UNIQUEMENT avec ce JSON : {format_json} ; le commentaire est écrit en {langue}."
+    )
+    data = _json_chat("Tu es un vérificateur de faits rigoureux. Tu réponds uniquement en JSON valide.",
+                      consigne, 0.0)
+    correct = data.get("correct")
+    if isinstance(correct, str):
+        correct = correct.strip().lower() in ("true", "vrai", "oui", "yes")
+    index = data.get("right_index")
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        index = None
+    if index is not None and not (0 <= index < NB_CHOICES):
+        index = None
+    return {"correct": bool(correct), "right_answer": str(data.get("right_answer", "")).strip()[:200],
+            "right_index": index, "comment": str(data.get("comment", "")).strip()[:300]}
+
+
 def translate_questions(items: list[dict], langue_cible: str) -> dict:
     """Traduit des questions de room dans la langue d'un joueur.
     items = [{"id", "question", "choices": [4 propositions] ou [], "reference": réponse attendue ou ""}]

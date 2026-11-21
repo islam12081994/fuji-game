@@ -151,7 +151,8 @@ def _feedback(q: dict, rec: dict, n: int, total: int) -> None:
 # --------------------------------------------------------------------------- #
 def _etat(room: dict) -> tuple:
     """Ce qui oblige tous les joueurs à recharger la page quand ça change."""
-    return (room["status"], room["current_q"], room["phase"], room["paused_at"] is not None)
+    return (room["status"], room["current_q"], room["phase"], room["paused_at"] is not None,
+            rooms.countdown_left(room) > 0)
 
 
 def _questions_du_joueur(room_id: int) -> list:
@@ -177,22 +178,31 @@ def _play_room(user: dict, room: dict) -> None:
         st.caption(t("g_translated", lang=LANGUES[get_lang()]))
     room = rooms.sync_room(room["code"]) or room
     est_hote = room["host_id"] == user["id"]
+    wm = room["wager_mode"]
     if st.session_state.pop(f"left_{room['id']}", False):
         st.toast(t("g_welcome_back"))
 
     # partie terminée : résultats, classement détaillé (et correction de l'hôte)
     if room["status"] == rooms.FINISHED:
-        _final_live(room["id"], user["id"])
+        _final_live(room["id"], user["id"], wm)
         st.divider()
-        _classement(room["id"], len(questions), user["id"], True)
+        _classement(room["id"], len(questions), user["id"], True, wm)
         if est_hote:
             st.divider()
-            _host_panel(room["code"], room["id"], user["id"], questions)
+            _host_panel(room["code"], room["id"], host_id=user["id"], questions=questions, wm=wm)
+        return
+
+    # compte à rebours de lancement : « La partie commence dans... »
+    if rooms.countdown_left(room) > 0:
+        st.markdown(f'<h2 style="text-align:center;margin-top:2rem">{html.escape(t("g_starting_in"))}</h2>',
+                    unsafe_allow_html=True)
+        _countdown(room["code"], user["id"], _etat(room))
         return
 
     total = len(questions)
     idx = min(room["current_q"], total - 1)
     q = questions[idx]
+    final = wm and idx == total - 1                          # question finale du mode paris
     answers = rooms.get_answers(room["id"], user["id"])
     rec = answers.get(q["id"])
     en_pause = room["paused_at"] is not None
@@ -205,7 +215,9 @@ def _play_room(user: dict, room: dict) -> None:
     elif st.session_state.get(cle_pause):
         st.toast(t("g_resumed", names=", ".join(st.session_state.pop(cle_pause))))
 
-    st.caption(t("g_score", score=_fmt(_points(questions, answers)), total=total))
+    points = rooms.player_points(room["id"], user["id"])
+    st.caption(t("g_points", points=_fmt(points)) if wm else
+               t("g_score", score=_fmt(_points(questions, answers)), total=total))
     _timer(room["code"], user["id"], _etat(room), room["time_per_question"])
     st.progress(idx / total, text=t("g_question_n", n=idx + 1, total=total))
 
@@ -215,35 +227,48 @@ def _play_room(user: dict, room: dict) -> None:
             st.button(t("g_skip_absent"), key=f"btn_skip_{room['id']}", on_click=_host_skip,
                       args=(room["code"], user["id"]))
         st.divider()
-        _classement(room["id"], total, user["id"], False)
+        _classement(room["id"], total, user["id"], False, wm)
         return
 
     if room["phase"] == rooms.REVIEW:
-        _review(room["code"], room["id"], q, idx, room["host_id"], user["id"], total)
+        _review(room["code"], room["id"], q, idx, room["host_id"], user["id"], total, wm)
     else:
-        _prev_result(questions, answers, idx)
-        st.subheader(q["question"])
-        if rec is not None:
-            st.success(t("g_answered_wait"))
-            if q["kind"] == "open":
-                st.write(t("g_your_answer", answer=rec["text"]))
-            elif rec["choice"] >= 0:
-                st.write(t("g_your_answer", answer=f"{LETTRES[rec['choice']]}. {q['choices'][rec['choice']]}"))
-        elif q["kind"] == "open":
-            st.caption(t("g_open_free"))
-            with st.form(f"form_open_{room['id']}_{q['id']}"):
-                texte = st.text_area(t("g_open_label"), max_chars=300, height=100,
-                                     key=f"open_{room['id']}_{q['id']}")
-                envoye = st.form_submit_button(t("g_open_submit"), type="primary")
-            if envoye and _repondre_room(user, room, q, texte):
-                st.rerun()
+        _prev_result(questions, answers, idx, wm)
+        cle_mise = f"wager_{room['id']}_{q['id']}"
+        mise = st.session_state.get(cle_mise) if (wm and rec is None) else None
+        if rec is None and final and mise is None:
+            _mise_finale(room, user["id"], idx, points, cle_mise)     # la question reste cachée jusqu'à la mise
         else:
-            st.caption(t("g_choose"))
-            for j, texte in enumerate(q["choices"]):
-                if st.button(f"{LETTRES[j]}.  {texte}", key=f"ans_{room['id']}_{q['id']}_{j}",
-                             use_container_width=True):
-                    if _repondre_room(user, room, q, j):
+            st.subheader(q["question"])
+            if rec is not None:
+                st.success(t("g_answered_wait"))
+                if wm and rec["wager"] is not None:
+                    st.write(t("g_your_wager", w=rec["wager"]))
+                if q["kind"] == "open":
+                    st.write(t("g_your_answer", answer=rec["text"]))
+                elif rec["choice"] >= 0:
+                    st.write(t("g_your_answer", answer=f"{LETTRES[rec['choice']]}. {q['choices'][rec['choice']]}"))
+            else:
+                if wm and not final:
+                    _grille_mises(room, user["id"], idx, cle_mise, mise)
+                elif final:
+                    st.info(t("g_final_bet", w=mise))
+                bloque = wm and mise is None                  # il faut d'abord choisir sa mise
+                if q["kind"] == "open":
+                    st.caption(t("g_open_free"))
+                    with st.form(f"form_open_{room['id']}_{q['id']}"):
+                        texte = st.text_area(t("g_open_label"), max_chars=300, height=100,
+                                             key=f"open_{room['id']}_{q['id']}", disabled=bloque)
+                        envoye = st.form_submit_button(t("g_open_submit"), type="primary", disabled=bloque)
+                    if envoye and _repondre_room(user, room, q, texte, mise):
                         st.rerun()
+                else:
+                    st.caption(t("g_choose"))
+                    for j, texte in enumerate(q["choices"]):
+                        if st.button(f"{LETTRES[j]}.  {texte}", key=f"ans_{room['id']}_{q['id']}_{j}",
+                                     use_container_width=True, disabled=bloque):
+                            if _repondre_room(user, room, q, j, mise):
+                                st.rerun()
 
     if not est_hote and room["phase"] == rooms.ANSWERING and not rooms.has_timer(room):
         _host_answered(room["id"], room["current_q"])        # sans temps : tout le monde voit qui a répondu
@@ -261,10 +286,56 @@ def _play_room(user: dict, room: dict) -> None:
         st.info(t("g_wait_host_next"))
 
     st.divider()
-    _classement(room["id"], total, user["id"], False)
+    _classement(room["id"], total, user["id"], False, wm)
 
 
-def _repondre_room(user: dict, room: dict, q: dict, valeur) -> bool:
+# --------------------------------------------------------------------------- #
+# Mode paris : choix de la mise
+# --------------------------------------------------------------------------- #
+def _choisir_mise(cle: str, valeur: int) -> None:
+    st.session_state[cle] = valeur
+
+
+def _grille_mises(room: dict, user_id: int, idx: int, cle: str, choisie) -> None:
+    """Grille des mises 1..N-1 : une mise déjà utilisée dans la partie est désactivée (elle ne sert qu'une fois)."""
+    st.markdown(f"**{t('g_wager_h')}**")
+    st.caption(t("g_wager_help"))
+    options = rooms.wager_options(room, user_id, idx)
+    utilisees = rooms.used_wagers(room["id"], user_id)
+    for debut in range(0, len(options), 5):
+        colonnes = st.columns(5)
+        for col, v in zip(colonnes, options[debut:debut + 5]):
+            col.button(str(v), key=f"wg_{room['id']}_{idx}_{v}", disabled=v in utilisees,
+                       type="primary" if choisie == v else "secondary", use_container_width=True,
+                       on_click=_choisir_mise, args=(cle, v))
+    if choisie is None:
+        st.info(t("g_choose_wager"))
+
+
+def _mise_finale(room: dict, user_id: int, idx: int, points: float, cle: str) -> None:
+    """Question finale : on mise AVANT de voir la question. Si la réponse est fausse, la mise est PERDUE."""
+    st.subheader(t("g_final_title"))
+    st.caption(t("g_final_help"))
+    st.markdown(f"**{t('g_current_score', s=_fmt(points))}**")
+    colonnes = st.columns(3)
+    for col, v in zip(colonnes, rooms.wager_options(room, user_id, idx)):
+        col.button(str(v), key=f"wgf_{room['id']}_{idx}_{v}", use_container_width=True,
+                   on_click=_choisir_mise, args=(cle, v))
+
+
+@st.fragment(run_every=1)
+def _countdown(code: str, user_id: int, etat: tuple) -> None:
+    """Grand compte à rebours de lancement ; recharge la page quand la première question démarre."""
+    rooms.heartbeat(code, user_id)
+    room = rooms.sync_room(code)
+    if room is None or _etat(room) != etat:
+        st.rerun()
+    restant = max(1, math.ceil(rooms.countdown_left(room)))
+    st.markdown(f'<div style="text-align:center;font-size:7rem;font-weight:800;line-height:1.1;'
+                f'color:#F0CF8A">{restant}</div>', unsafe_allow_html=True)
+
+
+def _repondre_room(user: dict, room: dict, q: dict, valeur, mise=None) -> bool:
     """Enregistre la réponse du joueur. Le clic est horodaté AVANT la correction : si la correction par l'IA
     prend quelques secondes, une réponse envoyée à temps reste valable."""
     clic = time.time()
@@ -277,9 +348,10 @@ def _repondre_room(user: dict, room: dict, q: dict, valeur) -> bool:
             pourcentage, commentaire = grading.grade(q["question"], q["reference"], texte, ia_language(),
                                                      autre_reference=q.get("orig_reference", ""))
         ok, message = rooms.submit_open_answer(room["code"], user["id"], q["id"], texte,
-                                               pourcentage, commentaire, submitted_at=clic)
+                                               pourcentage, commentaire, submitted_at=clic, wager=mise)
     else:
-        ok, message, _ = rooms.submit_answer(room["code"], user["id"], q["id"], valeur, submitted_at=clic)
+        ok, message, _ = rooms.submit_answer(room["code"], user["id"], q["id"], valeur, submitted_at=clic,
+                                             wager=mise)
     if not ok:
         st.error(tm(message))
     return ok
@@ -321,7 +393,7 @@ def _host_answered(room_id: int, current_q: int) -> None:
     st.caption(t("g_answered_count", n=n, total=total))
 
 
-def _prev_result(questions: list, answers: dict, idx: int) -> None:
+def _prev_result(questions: list, answers: dict, idx: int, wm: bool = False) -> None:
     """Rappel de ton résultat à la question précédente, au-dessus de la question en cours."""
     if idx == 0:
         return
@@ -333,8 +405,12 @@ def _prev_result(questions: list, answers: dict, idx: int) -> None:
             st.write(t("g_missed"))
         else:
             pct = max(0, min(100, int(round(rec["score"]))))
+            gain = ""
+            if wm:
+                pts = rooms.answer_points(True, idx - 1 == len(questions) - 1, rec["wager"], rec["score"])
+                gain = f"  ({pts:+.1f} pts)".replace(".0 pts", " pts")
             st.markdown(f'<span style="color:{_couleur(pct)};font-weight:800;font-size:1.3rem">{pct} %  -  '
-                        f'{html.escape(_verdict(pct))}</span>', unsafe_allow_html=True)
+                        f'{html.escape(_verdict(pct))}{html.escape(gain)}</span>', unsafe_allow_html=True)
 
 
 def _attendue(q: dict) -> str:
@@ -348,8 +424,10 @@ def _decider(code: str, host_id: int, question_id: int, user_id: int, pourcentag
     rooms.set_score(code, host_id, question_id, user_id, pourcentage)
 
 
-def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, user_id: int, prefixe: str) -> None:
-    """Une ligne : joueur, sa réponse, son pourcentage ; l'hôte a en plus les boutons de correction."""
+def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, user_id: int, prefixe: str,
+                    wm: bool = False, finale: bool = False) -> None:
+    """Une ligne : joueur, sa réponse, son pourcentage (et sa mise / ses points) ; l'hôte a en plus les boutons
+    de correction."""
     pct = int(round(a["score"]))
     c = _couleur(pct)
     moi = f" {t('g_you')}" if a["user_id"] == user_id else ""
@@ -360,10 +438,14 @@ def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, use
             reponse = a["text"]
         else:
             reponse = f"{LETTRES[a['choice']]}. {q['choices'][a['choice']]}"
-        origine = t("h_by_host") if a["verdict"] is not None else (
-            a["comment"] or "")
+        origine = t("h_by_host") if a["verdict"] is not None else (a["comment"] or "")
+        gain = ""
+        if wm:
+            pts = rooms.answer_points(True, finale, a["wager"], a["score"])
+            gain = t("g_wager_gain", w=a["wager"] or 0, pts=f"{pts:+.1f}".replace(".0", ""))
         detail = (f'« {html.escape(reponse)} »  \n<span style="color:{c};font-weight:800">{pct} %  -  '
-                  f'{html.escape(_verdict(pct))}</span> <span style="opacity:.7">{html.escape(origine)}</span>')
+                  f'{html.escape(_verdict(pct))}</span> <span style="opacity:.7">{html.escape(origine)}</span>'
+                  + (f'  \n<b>{html.escape(gain)}</b>' if gain else ""))
     peut_corriger = user_id == host_id and a["answered"]          # l'hôte corrige tout, y compris sa propre réponse
     if not a["answered"]:
         detail = f'<span style="color:{c};font-weight:800">{html.escape(detail)}</span>'
@@ -383,7 +465,8 @@ def _ligne_resultat(a: dict, q: dict, code: str, room_id: int, host_id: int, use
 
 
 @st.fragment(run_every=2)
-def _review(code: str, room_id: int, q: dict, idx: int, host_id: int, user_id: int, total: int) -> None:
+def _review(code: str, room_id: int, q: dict, idx: int, host_id: int, user_id: int, total: int,
+            wm: bool = False) -> None:
     """Résultats de la question qui vient de se terminer : réponse de chaque joueur et son pourcentage.
     L'hôte peut modifier chaque score ; le classement en dessous se met à jour tout de suite."""
     st.subheader(t("g_review_title", n=idx + 1))
@@ -393,20 +476,24 @@ def _review(code: str, room_id: int, q: dict, idx: int, host_id: int, user_id: i
         st.caption(t("g_host_review_hint"))
     for a in rooms.list_answers(room_id, q["id"]):
         with st.container(border=True):
-            _ligne_resultat(a, q, code, room_id, host_id, user_id, "rv")
+            _ligne_resultat(a, q, code, room_id, host_id, user_id, "rv", wm, wm and idx == total - 1)
 
 
 @st.fragment(run_every=3)
-def _final_live(room_id: int, user_id: int) -> None:
+def _final_live(room_id: int, user_id: int, wm: bool = False) -> None:
     """Résultat final du joueur (se met à jour si l'hôte corrige une réponse après la partie)."""
     questions = room_i18n.localize_questions(room_id, get_lang(), allow_ai=False)
     answers = rooms.get_answers(room_id, user_id)
-    _resultat_final(_points(questions, answers), len(questions))
+    if wm:
+        st.success(t("g_finished"))
+        st.subheader(t("g_your_points", points=_fmt(rooms.player_points(room_id, user_id))))
+    else:
+        _resultat_final(_points(questions, answers), len(questions))
     _recap(questions, answers)
 
 
 @st.fragment(run_every=3)
-def _host_panel(code: str, room_id: int, host_id: int, questions: list) -> None:
+def _host_panel(code: str, room_id: int, host_id: int, questions: list, wm: bool = False) -> None:
     """Fin de partie : l'hôte peut encore modifier le score de n'importe quelle réponse."""
     par_id = {q["id"]: (i, q) for i, q in enumerate(questions, start=1)}
     with st.expander(t("h_panel_title"), expanded=False):
@@ -420,11 +507,11 @@ def _host_panel(code: str, room_id: int, host_id: int, questions: list) -> None:
                 derniere = a["question_id"]
                 st.markdown(f"**{n}. {q['question']}**")
                 st.caption(t("q_expected", answer=_attendue(q)))
-            _ligne_resultat(a, q, code, room_id, host_id, host_id, "hp")
+            _ligne_resultat(a, q, code, room_id, host_id, host_id, "hp", wm, wm and n == len(questions))
 
 
 @st.fragment(run_every=3)
-def _classement(room_id: int, total: int, user_id: int, detail: bool) -> None:
+def _classement(room_id: int, total: int, user_id: int, detail: bool, wm: bool = False) -> None:
     """Classement en direct (se met à jour tout seul toutes les 3 secondes).
     detail = True une fois la partie terminée : tableau des pourcentages de chaque joueur par question."""
     lignes = rooms.scoreboard(room_id)
@@ -434,7 +521,8 @@ def _classement(room_id: int, total: int, user_id: int, detail: bool) -> None:
         rang = medailles[i] if i < 3 else f"{i + 1}."
         etat = "🏁" if ligne["answered"] >= total else f"({ligne['answered']}/{total})"
         moi = f" {t('g_you')}" if ligne["user_id"] == user_id else ""
-        st.write(f"{rang} **{ligne['username']}**{moi} - {_fmt(ligne['score'])} / {total}  {etat}")
+        valeur = t("g_pts", p=_fmt(ligne["score"])) if wm else f"{_fmt(ligne['score'])} / {total}"
+        st.write(f"{rang} **{ligne['username']}**{moi} - {valeur}  {etat}")
     if detail and lignes:
         st.success(t("g_all_done"))
         par = {(m["question_id"], m["user_id"]): m["score"] for m in rooms.answers_matrix(room_id)}

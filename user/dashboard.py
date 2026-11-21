@@ -202,13 +202,14 @@ def _page_create(user: dict) -> None:
         sans_temps = st.checkbox(t("solo_no_limit"), value=False, help=t("no_time_help"))
         temps = st.slider(t("time_per_q"), rooms.MIN_TIME, rooms.MAX_TIME, rooms.DEFAULT_TIME, step=5,
                           help=t("time_per_q_help"))
+        paris = st.checkbox(t("wager_label"), value=True, help=t("wager_help"))
         publique = st.checkbox(t("public_label"), value=True, help=t("public_help"))
         envoye = st.form_submit_button(t("next_questions"))
 
     if envoye:
         ok, message, code = rooms.create_room(
             user["id"], user["username"], nom, max_joueurs, nb_questions, is_public=publique,
-            time_per_question=rooms.NO_TIME if sans_temps else temps,
+            time_per_question=rooms.NO_TIME if sans_temps else temps, wager_mode=paris,
         )
         if ok:
             st.session_state["room_code"] = code
@@ -306,8 +307,13 @@ def _page_questions(user: dict) -> None:
 
 
 def _q_manual(room: dict, user: dict) -> None:
-    """Bouton 1 : formulaire pour ajouter une question à la main (réponse libre OU à choix)."""
+    """Bouton 1 : formulaire pour ajouter une question à la main (réponse libre OU à choix).
+    Avant l'ajout, l'IA vérifie la réponse donnée par l'hôte ; si elle la juge fausse, l'hôte choisit :
+    garder sa réponse, prendre celle de l'IA, ou annuler."""
     st.subheader(t("m_title"))
+    if st.session_state.get("manual_check"):
+        _q_manual_check(room, user)
+        return
     genre = st.radio(t("m_kind"), ["open", "qcm"], horizontal=True, key="manual_kind",
                      format_func=lambda k: t("qtype_" + k))
     n = st.session_state.get("manual_n", 0)      # change après un ajout -> le formulaire se vide
@@ -322,16 +328,71 @@ def _q_manual(room: dict, user: dict) -> None:
                                  format_func=lambda j: LETTRES[j])
         envoye = st.form_submit_button(t("m_add"))
 
-    if envoye:
-        q = ({"kind": "open", "question": question, "reference": reference} if genre == "open"
-             else {"kind": "qcm", "question": question, "choices": choix, "answer": bonne})
-        ok, message, _ = rooms.add_questions(room["code"], user["id"], [q], lang=get_lang())
-        if ok:
-            st.session_state["manual_n"] = n + 1
-            _flash(True, tm(message))
-            st.rerun()
+    if not envoye:
+        return
+    q = ({"kind": "open", "question": question, "reference": reference} if genre == "open"
+         else {"kind": "qcm", "question": question, "choices": choix, "answer": bonne})
+    propre, erreur = rooms._clean_question(q)         # mêmes règles que l'ajout (question vide, choix identiques...)
+    if propre is None:
+        st.error(tm(erreur))
+        return
+
+    verdict = None
+    try:
+        with st.spinner(t("v_spinner")):
+            verdict = questions_ai.verify_question(propre["question"], propre["kind"], propre["reference"],
+                                                   propre["choices"], propre["answer"], ia_language())
+    except Exception:                                  # clé manquante, réseau... : on n'empêche pas l'ajout
+        st.session_state["manual_unverified"] = True
+    if verdict is not None and not verdict["correct"]:
+        st.session_state["manual_check"] = {"q": propre, "ai": verdict}
+        st.rerun()
+    _q_manual_add(room, user, propre)
+
+
+def _q_manual_add(room: dict, user: dict, q: dict) -> None:
+    ok, message, _ = rooms.add_questions(room["code"], user["id"], [q], lang=get_lang())
+    if ok:
+        st.session_state["manual_n"] = st.session_state.get("manual_n", 0) + 1
+        st.session_state.pop("manual_check", None)
+        sans_verif = st.session_state.pop("manual_unverified", False)
+        _flash(True, tm(message) + (" " + t("v_unavailable") if sans_verif else ""))
+        st.rerun()
+    else:
+        st.error(tm(message))
+
+
+def _q_manual_check(room: dict, user: dict) -> None:
+    """L'IA n'est pas d'accord avec la réponse de l'hôte : il décide."""
+    pending = st.session_state["manual_check"]
+    q, ia = pending["q"], pending["ai"]
+    st.warning(t("v_disagree"))
+    st.markdown(f"**{q['question']}**")
+    if q["kind"] == "open":
+        st.write(t("v_your_answer", answer=q["reference"]))
+        propose = ia["right_answer"]
+    else:
+        st.write(t("v_your_answer", answer=f"{LETTRES[q['answer']]}. {q['choices'][q['answer']]}"))
+        i = ia["right_index"]
+        propose = f"{LETTRES[i]}. {q['choices'][i]}" if i is not None else ia["right_answer"]
+    st.info(t("v_ai_answer", answer=propose or "?"))
+    if ia["comment"]:
+        st.caption(f"💬 {ia['comment']}")
+
+    peut_corriger = (q["kind"] == "open" and ia["right_answer"]) or (q["kind"] == "qcm" and ia["right_index"] is not None)
+    c1, c2, c3 = st.columns(3)
+    if c1.button(t("v_keep"), key="v_keep", use_container_width=True):
+        _q_manual_add(room, user, q)
+    if c2.button(t("v_use_ai"), key="v_use_ai", use_container_width=True, type="primary", disabled=not peut_corriger):
+        corrigee = dict(q)
+        if q["kind"] == "open":
+            corrigee["reference"] = ia["right_answer"]
         else:
-            st.error(tm(message))
+            corrigee["answer"] = ia["right_index"]
+        _q_manual_add(room, user, corrigee)
+    if c3.button(t("v_cancel"), key="v_cancel", use_container_width=True):
+        st.session_state.pop("manual_check", None)
+        st.rerun()
 
 
 def _q_propose(room: dict, user: dict, questions: list, restant: int) -> None:
@@ -595,6 +656,8 @@ def _lobby_live(user: dict, code: str) -> None:
     st.title(room["name"])
     st.caption(t("lobby_info", host=room["host_name"], q=room["nb_questions"], vis=_visibilite(room)))
     st.caption(t("lobby_time", s=room["time_per_question"]) if room["time_per_question"] else t("lobby_no_time"))
+    if room["wager_mode"]:
+        st.caption(t("lobby_wager"))
     st.markdown(f'<div class="room-code">{room["code"]}</div>', unsafe_allow_html=True)
     st.caption(t("share_code"))
     _qr_block(room["code"])
@@ -696,21 +759,11 @@ def _page_game(user: dict, jeu) -> None:
 # --------------------------------------------------------------------------- #
 def restore_room(user: dict) -> None:
     """À appeler une fois l'utilisateur connecté (dans main.py).
-    À chaque connexion (ou rechargement de la page), on le ramène dans sa room en attente ou en cours,
-    avec sa progression : tout est enregistré dans la base."""
+    À la connexion on arrive TOUJOURS sur l'accueil (on ne rouvre plus la room automatiquement : se déconnecter
+    fait quitter les rooms). Si une partie est encore en cours, l'accueil propose « Retourner dans ma room »."""
     _setup()
-    if st.session_state.get("restored_for") == user["id"]:
-        return
     st.session_state["restored_for"] = user["id"]
-
-    code = rooms.active_room_of(user["id"])
-    if not code:
-        return
-    room = rooms.get_room(code)
-    st.session_state["room_code"] = code
-    st.session_state["dash_page"] = "game" if room["status"] == rooms.PLAYING else "lobby"
-    st.session_state["nav_page"] = "dashboard"
-    _flash(True, t("restored_room", name=room["name"]))
+    st.session_state.setdefault("dash_page", "home")
 
 
 def _open_room(code: str, page: str) -> None:

@@ -25,6 +25,16 @@ Partie SYNCHRONISÉE : tous les joueurs voient la même question en même temps.
   - si un joueur quitte la partie (ou ferme son navigateur), la partie est mise EN PAUSE (temps arrêté) jusqu'à
     son retour ; l'hôte peut aussi continuer sans lui (skip_absent).
 Une réponse est VRAIE si son pourcentage est strictement supérieur à 50 %.
+
+Au lancement, un COMPTE À REBOURS (COUNTDOWN_SECONDS) précède la première question.
+
+MODE PARIS (wager_mode, choisi par l'hôte à la création) :
+  - avant chaque question (sauf la dernière) le joueur choisit une mise de 1 à N-1 points (N = nombre de
+    questions) ; une mise ne peut servir QU'UNE SEULE FOIS dans la partie (elle devient désactivée ensuite) ;
+    points gagnés = mise x pourcentage / 100, rien n'est perdu si la réponse est fausse ;
+  - la DERNIÈRE question est la question finale : le joueur mise 0, S ou 2xS points (S = son score actuel,
+    10 au minimum) ; si sa réponse est fausse (pourcentage <= 50), il PERD sa mise (le score peut devenir négatif).
+Sans mode paris : 1 point par question x pourcentage / 100, comme avant.
 """
 import json
 import secrets
@@ -57,6 +67,7 @@ ABSENT_AFTER = 15             # secondes sans signe de vie d'un joueur -> il est
 SUBMIT_TOLERANCE = 1.5        # secondes de tolérance pour une réponse envoyée juste à la fin du temps
 SEUIL_VRAI = 50               # une réponse est VRAIE si son pourcentage est > 50
 AUTO_REVIEW_IF_ALL_ANSWERED = False  # True : les résultats s'affichent dès que TOUS les joueurs ont répondu
+COUNTDOWN_SECONDS = 6         # compte à rebours « La partie commence dans... » au lancement
 ANSWERING, REVIEW = "answering", "review"   # phases d'une question : on répond / on voit les résultats
 
 
@@ -77,7 +88,8 @@ def init_rooms_db() -> None:
                 current_q INTEGER NOT NULL DEFAULT 0,            -- index (0, 1, 2...) de la question en cours
                 q_started_at REAL,                               -- heure (epoch) de début de la question en cours
                 phase TEXT NOT NULL DEFAULT 'answering',         -- 'answering' (on répond) ou 'review' (résultats)
-                paused_at REAL                                   -- heure de début de la pause (joueur sorti), sinon NULL
+                paused_at REAL,                                  -- heure de début de la pause (joueur sorti), sinon NULL
+                wager_mode INTEGER NOT NULL DEFAULT 0            -- 1 : mode paris (mises de points)
             )
         """)
         # Migration : si la table existait déjà SANS la colonne "is_public", on l'ajoute
@@ -95,6 +107,8 @@ def init_rooms_db() -> None:
         if "phase" not in colonnes:
             conn.execute("ALTER TABLE rooms ADD COLUMN phase TEXT NOT NULL DEFAULT 'answering'")
             conn.execute("ALTER TABLE rooms ADD COLUMN paused_at REAL")
+        if "wager_mode" not in colonnes:
+            conn.execute("ALTER TABLE rooms ADD COLUMN wager_mode INTEGER NOT NULL DEFAULT 0")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS room_players (
                 room_id INTEGER NOT NULL,
@@ -142,6 +156,7 @@ def init_rooms_db() -> None:
                 text_answer TEXT NOT NULL DEFAULT '',    -- réponse écrite (questions libres)
                 score REAL,                              -- pourcentage de bonne réponse (0 à 100)
                 comment TEXT NOT NULL DEFAULT '',        -- commentaire de la correction
+                wager INTEGER,                           -- mise du joueur (mode paris), sinon NULL
                 auto_score REAL,                         -- pourcentage de la correction automatique
                 host_verdict INTEGER,                    -- décision de l'hôte : NULL = aucune, 1 = correct, 0 = faux
                 PRIMARY KEY (room_id, user_id, question_id)
@@ -154,7 +169,7 @@ def init_rooms_db() -> None:
                                 ("lang", "TEXT NOT NULL DEFAULT 'fr'")]),
             ("room_answers", [("text_answer", "TEXT NOT NULL DEFAULT ''"), ("score", "REAL"),
                               ("comment", "TEXT NOT NULL DEFAULT ''"),
-                              ("auto_score", "REAL"), ("host_verdict", "INTEGER")]),
+                              ("auto_score", "REAL"), ("host_verdict", "INTEGER"), ("wager", "INTEGER")]),
         ):
             existantes = [l[1] for l in conn.execute(f"PRAGMA table_info({table})").fetchall()]
             for nom, definition in ajouts:
@@ -172,7 +187,8 @@ def _new_code() -> str:
 def create_room(host_id: int, host_name: str, name: str = "",
                 max_players: int = 6, nb_questions: int = 10,
                 is_public: bool = True,
-                time_per_question: int = DEFAULT_TIME) -> tuple[bool, str, str | None]:
+                time_per_question: int = DEFAULT_TIME,
+                wager_mode: bool = False) -> tuple[bool, str, str | None]:
     """Crée une room et y place l'hôte. Retourne (ok, message, code)."""
     if not (MIN_PLAYERS <= max_players <= MAX_PLAYERS):
         return False, f"Le nombre de joueurs doit être entre {MIN_PLAYERS} et {MAX_PLAYERS}.", None
@@ -200,8 +216,9 @@ def create_room(host_id: int, host_name: str, name: str = "",
             try:
                 cur = conn.execute(
                     "INSERT INTO rooms (code, name, host_id, max_players, nb_questions, is_public, "
-                    "time_per_question) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (code, name, host_id, max_players, nb_questions, int(is_public), int(time_per_question)),
+                    "time_per_question, wager_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (code, name, host_id, max_players, nb_questions, int(is_public), int(time_per_question),
+                     int(wager_mode)),
                 )
                 break
             except sqlite3.IntegrityError:
@@ -219,7 +236,7 @@ def get_room(code: str):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         row = conn.execute(
             "SELECT id, code, name, host_id, max_players, nb_questions, status, is_public, "
-            "time_per_question, current_q, q_started_at, phase, paused_at FROM rooms WHERE code = ?", (code.strip().upper(),)
+            "time_per_question, current_q, q_started_at, phase, paused_at, wager_mode FROM rooms WHERE code = ?", (code.strip().upper(),)
         ).fetchone()
         if not row:
             return None
@@ -232,7 +249,7 @@ def get_room(code: str):
         "max_players": row[4], "nb_questions": row[5], "status": row[6],
         "is_public": bool(row[7]),
         "time_per_question": row[8], "current_q": row[9], "q_started_at": row[10],
-        "phase": row[11], "paused_at": row[12],
+        "phase": row[11], "paused_at": row[12], "wager_mode": bool(row[13]),
         "players": [{"user_id": p[0], "username": p[1], "last_seen": p[2], "skipped": bool(p[3])}
                     for p in players],
     }
@@ -281,6 +298,21 @@ def leave_room(code: str, user_id: int) -> tuple[bool, str]:
     return True, message
 
 
+def leave_all_rooms(user_id: int) -> None:
+    """Déconnexion : le joueur quitte automatiquement toutes ses rooms.
+    - room en attente : il en sort (si c'est l'hôte, la room est fermée) ;
+    - partie en cours : il est marqué absent (la partie se met en pause), ses réponses restent enregistrées."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        lignes = conn.execute(
+            "SELECT r.code, r.status FROM rooms r JOIN room_players p ON p.room_id = r.id "
+            "WHERE p.user_id = ? AND r.status IN (?, ?)", (user_id, WAITING, PLAYING)).fetchall()
+    for code, statut in lignes:
+        if statut == WAITING:
+            leave_room(code, user_id)
+        else:
+            mark_left(code, user_id)
+
+
 def start_room(code: str, user_id: int) -> tuple[bool, str]:
     """Seul l'hôte peut lancer la partie, une fois toutes les questions prêtes."""
     room = get_room(code)
@@ -295,8 +327,10 @@ def start_room(code: str, user_id: int) -> tuple[bool, str]:
         return False, f"Il manque des questions ({nb}/{room['nb_questions']})."
     with closing(sqlite3.connect(DB_PATH)) as conn:
         maintenant = time.time()
+        # la 1re question commence APRÈS le compte à rebours (q_started_at est dans le futur)
         conn.execute("UPDATE rooms SET status = ?, current_q = 0, q_started_at = ?, phase = ?, "
-                     "paused_at = NULL WHERE id = ?", (PLAYING, maintenant, ANSWERING, room["id"]))
+                     "paused_at = NULL WHERE id = ?",
+                     (PLAYING, maintenant + COUNTDOWN_SECONDS, ANSWERING, room["id"]))
         conn.execute("UPDATE room_players SET last_seen = ?, skipped = 0 WHERE room_id = ?",
                      (maintenant, room["id"]))
         conn.commit()
@@ -518,6 +552,8 @@ def _check_window(conn, room, question_id: int, submitted_at: float | None) -> s
                          (room["id"], question_id)).fetchone()[0]
     if index != room["current_q"]:
         return "Temps écoulé : la question est terminée."
+    if room["q_started_at"] and time.time() < room["q_started_at"] - 0.5:
+        return "La partie n'a pas encore commencé."
     debut = room["q_started_at"] or 0
     envoye = submitted_at if submitted_at is not None else time.time()
     if has_timer(room) and envoye > debut + room["time_per_question"] + SUBMIT_TOLERANCE:
@@ -526,7 +562,7 @@ def _check_window(conn, room, question_id: int, submitted_at: float | None) -> s
 
 
 def submit_answer(code: str, user_id: int, question_id: int, choice: int,
-                  submitted_at: float | None = None) -> tuple[bool, str, bool]:
+                  submitted_at: float | None = None, wager: int | None = None) -> tuple[bool, str, bool]:
     """Enregistre la réponse d'un joueur à un QCM. Retourne (ok, message, bonne_réponse)."""
     room = sync_room(code)
     erreur = _check_player(room, user_id)
@@ -543,11 +579,15 @@ def submit_answer(code: str, user_id: int, question_id: int, choice: int,
         erreur = _check_window(conn, room, question_id, submitted_at)
         if erreur:
             return False, erreur, False
+        erreur, wager = _check_wager(conn, room, user_id, question_id, wager)
+        if erreur:
+            return False, erreur, False
         correcte = int(choice == q[0])
         cur = conn.execute(
             "INSERT OR IGNORE INTO room_answers "
-            "(room_id, user_id, question_id, choice, is_correct, score, auto_score) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (room["id"], user_id, question_id, choice, correcte, correcte * 100, correcte * 100),
+            "(room_id, user_id, question_id, choice, is_correct, score, auto_score, wager) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (room["id"], user_id, question_id, choice, correcte, correcte * 100, correcte * 100, wager),
         )
         conn.commit()
     if cur.rowcount == 0:
@@ -558,7 +598,7 @@ def submit_answer(code: str, user_id: int, question_id: int, choice: int,
 
 def submit_open_answer(code: str, user_id: int, question_id: int, text: str,
                        percent: float, comment: str = "",
-                       submitted_at: float | None = None) -> tuple[bool, str]:
+                       submitted_at: float | None = None, wager: int | None = None) -> tuple[bool, str]:
     """Enregistre la réponse écrite d'un joueur, avec le pourcentage de la correction automatique (0 à 100).
     La réponse est vraie si percent > 50."""
     room = sync_room(code)
@@ -578,18 +618,105 @@ def submit_open_answer(code: str, user_id: int, question_id: int, text: str,
         erreur = _check_window(conn, room, question_id, submitted_at)
         if erreur:
             return False, erreur
+        erreur, wager = _check_wager(conn, room, user_id, question_id, wager)
+        if erreur:
+            return False, erreur
         cur = conn.execute(
             "INSERT OR IGNORE INTO room_answers "
-            "(room_id, user_id, question_id, choice, is_correct, text_answer, score, auto_score, comment) "
-            "VALUES (?, ?, ?, -1, ?, ?, ?, ?, ?)",
+            "(room_id, user_id, question_id, choice, is_correct, text_answer, score, auto_score, comment, wager) "
+            "VALUES (?, ?, ?, -1, ?, ?, ?, ?, ?, ?)",
             (room["id"], user_id, question_id, int(percent > SEUIL_VRAI), text[:300], percent, percent,
-             (comment or "")[:300]),
+             (comment or "")[:300], wager),
         )
         conn.commit()
     if cur.rowcount == 0:
         return False, "Tu as déjà répondu à cette question."
     _review_if_all_answered(room["code"])
     return True, ""
+
+
+# --------------------------------------------------------------------------- #
+# Mode paris : mises, points
+# --------------------------------------------------------------------------- #
+def answer_points(wager_mode: bool, is_final: bool, wager, score) -> float:
+    """Points rapportés par UNE réponse.
+    - sans mode paris : pourcentage / 100 (1 point maximum par question) ;
+    - mode paris, question normale : mise x pourcentage / 100 (une réponse fausse ne fait rien perdre) ;
+    - mode paris, question FINALE : mise x pourcentage / 100 si la réponse est vraie (> 50 %), sinon on PERD la mise."""
+    score = score or 0
+    if not wager_mode:
+        return score / 100
+    mise = wager or 0
+    if is_final:
+        return mise * score / 100 if score > SEUIL_VRAI else -float(mise)
+    return mise * score / 100
+
+
+def _final_question_id(conn, room_id: int):
+    row = conn.execute("SELECT MAX(id) FROM room_questions WHERE room_id = ?", (room_id,)).fetchone()
+    return row[0] if row else None
+
+
+def _points_by_player(conn, room_id: int) -> dict:
+    """{user_id: [points, nombre de réponses]} pour la room."""
+    wm = bool(conn.execute("SELECT wager_mode FROM rooms WHERE id = ?", (room_id,)).fetchone()[0])
+    finale = _final_question_id(conn, room_id)
+    out: dict = {}
+    for uid, qid, score, mise in conn.execute(
+            "SELECT user_id, question_id, COALESCE(score, is_correct * 100), wager FROM room_answers "
+            "WHERE room_id = ?", (room_id,)):
+        cumul = out.setdefault(uid, [0.0, 0])
+        cumul[0] += answer_points(wm, qid == finale, mise, score)
+        cumul[1] += 1
+    return out
+
+
+def player_points(room_id: int, user_id: int) -> float:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        return _points_by_player(conn, room_id).get(user_id, [0.0, 0])[0]
+
+
+def used_wagers(room_id: int, user_id: int) -> set:
+    """Mises déjà utilisées par ce joueur dans la partie (hors question finale) : elles sont désactivées."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        finale = _final_question_id(conn, room_id)
+        rows = conn.execute("SELECT wager FROM room_answers WHERE room_id = ? AND user_id = ? "
+                            "AND wager IS NOT NULL AND question_id <> ?", (room_id, user_id, finale or -1)).fetchall()
+    return {r[0] for r in rows}
+
+
+def wager_options(room: dict, user_id: int, index: int) -> list[int]:
+    """Mises possibles pour la question n° `index` (0, 1, 2...).
+    - question normale : 1, 2, ... N-1 (N = nombre de questions) ;
+    - question finale  : 0, S, 2xS (S = score actuel du joueur, 10 au minimum)."""
+    n = room["nb_questions"]
+    if index >= n - 1:
+        base = max(10, int(round(player_points(room["id"], user_id))))
+        return [0, base, 2 * base]
+    return list(range(1, n))
+
+
+def _check_wager(conn, room: dict, user_id: int, question_id: int, wager) -> tuple[str, int | None]:
+    """Vérifie la mise envoyée avec une réponse. Retourne (erreur, mise à enregistrer)."""
+    if not room["wager_mode"]:
+        return "", None
+    if not isinstance(wager, int) or isinstance(wager, bool):
+        return "Choisis une mise avant de répondre.", None
+    index = conn.execute("SELECT COUNT(*) FROM room_questions WHERE room_id = ? AND id < ?",
+                         (room["id"], question_id)).fetchone()[0]
+    if index >= room["nb_questions"] - 1:                       # question finale
+        base = max(10, int(round(_points_by_player(conn, room["id"]).get(user_id, [0.0, 0])[0])))
+        if wager not in (0, base, 2 * base):
+            return "Mise invalide.", None
+        return "", wager
+    if not (1 <= wager <= room["nb_questions"] - 1):
+        return "Mise invalide.", None
+    finale = _final_question_id(conn, room["id"])
+    deja = conn.execute("SELECT 1 FROM room_answers WHERE room_id = ? AND user_id = ? AND wager = ? "
+                        "AND question_id <> ?", (room["id"], user_id, wager, finale or -1)).fetchone()
+    if deja:
+        return "Cette mise est déjà utilisée.", None
+    return "", wager
 
 
 # --------------------------------------------------------------------------- #
@@ -600,6 +727,14 @@ def has_timer(room: dict) -> bool:
     return bool(room["time_per_question"])
 
 
+def countdown_left(room: dict) -> float:
+    """Secondes restantes avant la 1re question (compte à rebours de lancement), 0 sinon."""
+    if (room["status"] != PLAYING or room["phase"] != ANSWERING or room["current_q"] != 0
+            or not room.get("q_started_at")):
+        return 0.0
+    return max(0.0, room["q_started_at"] - (room["paused_at"] or time.time()))
+
+
 def seconds_left(room: dict) -> float:
     """Secondes restantes pour la question en cours (0 si le temps est écoulé ou si on est en phase résultats).
     Pendant une pause, le temps est figé."""
@@ -607,7 +742,7 @@ def seconds_left(room: dict) -> float:
             or not has_timer(room)):
         return 0.0
     maintenant = room["paused_at"] or time.time()
-    return max(0.0, room["q_started_at"] + room["time_per_question"] - maintenant)
+    return max(0.0, min(room["q_started_at"] + room["time_per_question"] - maintenant, room["time_per_question"]))
 
 
 def heartbeat(code: str, user_id: int) -> None:
@@ -791,7 +926,7 @@ def list_answers(room_id: int, question_id: int | None = None) -> list[dict]:
         rows = conn.execute(
             f"""
             SELECT a.question_id, a.user_id, p.username, a.text_answer, a.choice,
-                   COALESCE(a.auto_score, a.score, 0), COALESCE(a.score, 0), a.host_verdict, a.comment
+                   COALESCE(a.auto_score, a.score, 0), COALESCE(a.score, 0), a.host_verdict, a.comment, a.wager
             FROM room_answers a
             JOIN room_players p ON p.room_id = a.room_id AND p.user_id = a.user_id
             WHERE a.room_id = ? {filtre}
@@ -801,7 +936,7 @@ def list_answers(room_id: int, question_id: int | None = None) -> list[dict]:
         ).fetchall()
     return [{"question_id": r[0], "user_id": r[1], "username": r[2], "text": r[3], "choice": r[4],
              "answered": bool(r[3]) or r[4] >= 0, "auto": r[5], "score": r[6], "verdict": r[7],
-             "comment": r[8]} for r in rows]
+             "comment": r[8], "wager": r[9]} for r in rows]
 
 
 def set_score(code: str, host_id: int, question_id: int, user_id: int,
@@ -841,31 +976,22 @@ def get_answers(room_id: int, user_id: int) -> dict:
     with closing(sqlite3.connect(DB_PATH)) as conn:
         rows = conn.execute(
             "SELECT question_id, choice, text_answer, COALESCE(score, is_correct * 100), comment, "
-            "COALESCE(auto_score, score, is_correct * 100), host_verdict "
+            "COALESCE(auto_score, score, is_correct * 100), host_verdict, wager "
             "FROM room_answers WHERE room_id = ? AND user_id = ?",
             (room_id, user_id),
         ).fetchall()
     return {r[0]: {"choice": r[1], "text": r[2], "score": r[3], "comment": r[4], "auto": r[5],
-                   "verdict": r[6]} for r in rows}
+                   "verdict": r[6], "wager": r[7]} for r in rows}
 
 
 def scoreboard(room_id: int) -> list[dict]:
-    """Classement : points (somme des pourcentages / 100), nombre de questions répondues."""
+    """Classement : points (voir answer_points), nombre de questions répondues."""
     with closing(sqlite3.connect(DB_PATH)) as conn:
-        rows = conn.execute(
-            """
-            SELECT p.user_id, p.username,
-                   COALESCE(SUM(COALESCE(a.score, a.is_correct * 100)), 0) / 100.0 AS points,
-                   COUNT(a.question_id) AS answered
-            FROM room_players p
-            LEFT JOIN room_answers a ON a.room_id = p.room_id AND a.user_id = p.user_id
-            WHERE p.room_id = ?
-            GROUP BY p.user_id, p.username
-            ORDER BY points DESC, answered DESC, p.username
-            """,
-            (room_id,),
-        ).fetchall()
-    return [{"user_id": r[0], "username": r[1], "score": round(r[2], 2), "answered": r[3]} for r in rows]
+        joueurs = conn.execute("SELECT user_id, username FROM room_players WHERE room_id = ?", (room_id,)).fetchall()
+        points = _points_by_player(conn, room_id)
+    lignes = [{"user_id": uid, "username": nom, "score": round(points.get(uid, [0.0, 0])[0], 2),
+               "answered": points.get(uid, [0.0, 0])[1]} for uid, nom in joueurs]
+    return sorted(lignes, key=lambda l: (-l["score"], -l["answered"], l["username"]))
 
 
 def answers_matrix(room_id: int) -> list[dict]:
@@ -889,7 +1015,8 @@ def list_user_rooms(user_id: int, limit: int = 30) -> list[dict]:
                    (SELECT COUNT(*) FROM room_players x WHERE x.room_id = r.id),
                    (SELECT COALESCE(SUM(COALESCE(a.score, a.is_correct * 100)), 0) / 100.0
                       FROM room_answers a WHERE a.room_id = r.id AND a.user_id = ?),
-                   (SELECT COUNT(*) FROM room_answers a WHERE a.room_id = r.id AND a.user_id = ?)
+                   (SELECT COUNT(*) FROM room_answers a WHERE a.room_id = r.id AND a.user_id = ?),
+                   r.id
             FROM rooms r JOIN room_players p ON p.room_id = r.id
             WHERE p.user_id = ?
             ORDER BY r.id DESC
@@ -897,8 +1024,9 @@ def list_user_rooms(user_id: int, limit: int = 30) -> list[dict]:
             """,
             (user_id, user_id, user_id, limit),
         ).fetchall()
+        points = {r[9]: _points_by_player(conn, r[9]).get(user_id, [0.0, 0])[0] for r in rows}   # mises comprises
     return [
         {"code": r[0], "name": r[1], "status": r[2], "created_at": r[3], "host_id": r[4],
-         "nb_questions": r[5], "nb_players": r[6], "score": round(r[7], 2), "answered": r[8]}
+         "nb_questions": r[5], "nb_players": r[6], "score": round(points[r[9]], 2), "answered": r[8]}
         for r in rows
     ]
